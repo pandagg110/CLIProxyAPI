@@ -41,6 +41,12 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional display names matched to api-keys by index. Names do not affect authentication.
+api-key-names:
+  - "User 1"
+  - "User 2"
+  - "User 3"
+
 # Enable debug logging
 debug: false
 

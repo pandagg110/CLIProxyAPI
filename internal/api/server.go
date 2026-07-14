@@ -95,6 +95,7 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	logsDir := logging.ResolveLogDirectory(cfg)
 	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
 	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
+	logger.SetAPIKeyNames(cfg.APIKeys, cfg.APIKeyNames)
 	return logger
 }
 
@@ -1832,6 +1833,10 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		if setter, ok := s.requestLogger.(interface{ SetHomeEnabled(bool) }); ok {
 			setter.SetHomeEnabled(cfg.Home.Enabled)
 		}
+	}
+
+	if setter, ok := s.requestLogger.(interface{ SetAPIKeyNames([]string, []string) }); ok {
+		setter.SetAPIKeyNames(cfg.APIKeys, cfg.APIKeyNames)
 	}
 
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {

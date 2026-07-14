@@ -80,6 +80,31 @@ func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 	}
 }
 
+func TestRequestAPIKey(t *testing.T) {
+	tests := []struct {
+		name   string
+		header http.Header
+		query  string
+		want   string
+	}{
+		{name: "bearer", header: http.Header{"Authorization": []string{"Bearer bearer-key"}}, want: "bearer-key"},
+		{name: "anthropic", header: http.Header{"X-Api-Key": []string{"anthropic-key"}}, want: "anthropic-key"},
+		{name: "google", header: http.Header{"X-Goog-Api-Key": []string{"google-key"}}, want: "google-key"},
+		{name: "query", query: "key=query-key", want: "query-key"},
+		{name: "missing", want: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses?"+test.query, nil)
+			req.Header = test.header
+			if got := requestAPIKey(req); got != test.want {
+				t.Fatalf("requestAPIKey() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestShouldCaptureRequestBody(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -41,7 +41,14 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			return
 		}
 
-		loggerEnabled := logger.IsEnabled()
+		requestLogger := logger
+		if scopedLogger, ok := logger.(interface {
+			ForAPIKey(string) logging.RequestLogger
+		}); ok {
+			requestLogger = scopedLogger.ForAPIKey(requestAPIKey(c.Request))
+		}
+
+		loggerEnabled := requestLogger.IsEnabled()
 
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, shouldCaptureRequestBody(loggerEnabled, c.Request))
@@ -53,12 +60,12 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		// Create response writer wrapper
-		wrapper := NewResponseWriterWrapper(c.Writer, logger, requestInfo)
+		wrapper := NewResponseWriterWrapper(c.Writer, requestLogger, requestInfo)
 		if !loggerEnabled {
 			wrapper.logOnErrorOnly = true
 		}
 		c.Writer = wrapper
-		attachRequestLogSources(c, logger, loggerEnabled)
+		attachRequestLogSources(c, requestLogger, loggerEnabled)
 
 		// Process the request
 		c.Next()
@@ -69,6 +76,27 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			// In a real implementation, you might want to use a proper logger here
 		}
 	}
+}
+
+func requestAPIKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if parts := strings.Fields(req.Header.Get("Authorization")); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return parts[1]
+	}
+	for _, header := range []string{"X-Goog-Api-Key", "X-Api-Key"} {
+		if value := strings.TrimSpace(req.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	if req.URL != nil {
+		if value := strings.TrimSpace(req.URL.Query().Get("key")); value != "" {
+			return value
+		}
+		return strings.TrimSpace(req.URL.Query().Get("auth_token"))
+	}
+	return ""
 }
 
 type fileBodySourceFactory interface {

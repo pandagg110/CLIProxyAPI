@@ -105,17 +105,40 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys, "api-key-names": h.cfg.APIKeyNames})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
+	oldKeys := append([]string(nil), h.cfg.APIKeys...)
+	oldNames := append([]string(nil), h.cfg.APIKeyNames...)
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)
+		h.cfg.APIKeyNames = realignAPIKeyNames(oldKeys, oldNames, h.cfg.APIKeys)
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	h.patchStringList(c, &h.cfg.APIKeys, func() {})
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+	oldKeys := append([]string(nil), h.cfg.APIKeys...)
+	oldNames := append([]string(nil), h.cfg.APIKeyNames...)
+	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {
+		h.cfg.APIKeyNames = realignAPIKeyNames(oldKeys, oldNames, h.cfg.APIKeys)
+	})
+}
+
+func realignAPIKeyNames(oldKeys, oldNames, newKeys []string) []string {
+	namesByKey := make(map[string]string, len(oldKeys))
+	for index, key := range oldKeys {
+		if index < len(oldNames) {
+			namesByKey[key] = oldNames[index]
+		}
+	}
+	names := make([]string, len(newKeys))
+	for index, key := range newKeys {
+		names[index] = namesByKey[key]
+	}
+	return names
 }
 
 // gemini-api-key: []GeminiKey

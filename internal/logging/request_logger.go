@@ -9,6 +9,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -415,6 +417,13 @@ type FileRequestLogger struct {
 	errorLogsMaxFiles int
 
 	homeEnabled bool
+
+	keyNames *apiKeyNameIndex
+}
+
+type apiKeyNameIndex struct {
+	mu    sync.RWMutex
+	names map[string]string
 }
 
 type homeRequestLogPayload struct {
@@ -493,6 +502,7 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 		logsDir:           logsDir,
 		errorLogsMaxFiles: errorLogsMaxFiles,
 		homeEnabled:       false,
+		keyNames:          &apiKeyNameIndex{names: make(map[string]string)},
 	}
 }
 
@@ -525,6 +535,106 @@ func (l *FileRequestLogger) SetEnabled(enabled bool) {
 // SetErrorLogsMaxFiles updates the maximum number of error log files to retain.
 func (l *FileRequestLogger) SetErrorLogsMaxFiles(maxFiles int) {
 	l.errorLogsMaxFiles = maxFiles
+}
+
+// SetAPIKeyNames replaces the display-name mapping used for per-key log directories.
+func (l *FileRequestLogger) SetAPIKeyNames(keys, names []string) {
+	if l == nil {
+		return
+	}
+	if l.keyNames == nil {
+		l.keyNames = &apiKeyNameIndex{}
+	}
+	next := make(map[string]string)
+	for index, key := range keys {
+		if index >= len(names) {
+			break
+		}
+		name := sanitizeAPIKeyName(names[index])
+		if strings.TrimSpace(key) != "" && name != "" {
+			next[key] = name
+		}
+	}
+	l.keyNames.mu.Lock()
+	l.keyNames.names = next
+	l.keyNames.mu.Unlock()
+}
+
+// ForAPIKey returns a request logger scoped to a safe per-key directory.
+// The raw API key is never included in the directory name.
+func (l *FileRequestLogger) ForAPIKey(apiKey string) RequestLogger {
+	if l == nil {
+		return l
+	}
+	clone := *l
+	directory := ""
+	if l.keyNames != nil {
+		l.keyNames.mu.RLock()
+		directory = l.keyNames.names[apiKey]
+		l.keyNames.mu.RUnlock()
+	}
+	if directory == "" {
+		directory = APIKeyLogDirectory(apiKey)
+	}
+	clone.logsDir = filepath.Join(l.logsDir, "keys", directory)
+	return &clone
+}
+
+func sanitizeAPIKeyName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_':
+			builder.WriteRune(r)
+		case unicode.IsSpace(r):
+			builder.WriteByte('-')
+		default:
+			builder.WriteByte('-')
+		}
+	}
+	result := strings.Trim(builder.String(), "-_")
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	runes := []rune(result)
+	if len(runes) > 48 {
+		result = string(runes[:48])
+	}
+	return result
+}
+
+// APIKeyLogDirectory returns the stable, non-secret directory name for an API key.
+// Keys following cpa_<alias>_<secret> use their alias; legacy keys use a short hash.
+func APIKeyLogDirectory(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return "unauthenticated"
+	}
+	if strings.HasPrefix(apiKey, "cpa_") {
+		remainder := strings.TrimPrefix(apiKey, "cpa_")
+		alias, secret, found := strings.Cut(remainder, "_")
+		if found && len(secret) >= 16 && isSafeAPIKeyAlias(alias) {
+			return alias
+		}
+	}
+	digest := sha256.Sum256([]byte(apiKey))
+	return fmt.Sprintf("key-%x", digest[:6])
+}
+
+func isSafeAPIKeyAlias(alias string) bool {
+	if alias == "" || len(alias) > 48 {
+		return false
+	}
+	for _, r := range alias {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // NewFileBodySource creates a temp-backed source under the request log directory.
