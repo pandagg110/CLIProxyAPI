@@ -69,6 +69,7 @@ var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, 
 const (
 	exampleAPIKeyManagementPath = "/management.html"
 	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
+	maxManagementHTMLSize       = 16 << 20
 )
 
 type serverOptionConfig struct {
@@ -238,6 +239,12 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+
+	managementHTMLCacheMu      sync.Mutex
+	managementHTMLCachePath    string
+	managementHTMLCacheModTime time.Time
+	managementHTMLCacheSize    int64
+	managementHTMLCache        []byte
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -418,7 +425,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" {
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" || path == managementasset.RequestLogUsageScriptPath {
 				c.Next()
 				return
 			}
@@ -512,6 +519,9 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.HEAD("/management.html", s.serveManagementControlPanel)
+	s.engine.GET(managementasset.RequestLogUsageScriptPath, s.serveRequestLogUsageScript)
+	s.engine.HEAD(managementasset.RequestLogUsageScriptPath, s.serveRequestLogUsageScript)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
@@ -865,6 +875,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
+		mgmt.GET("/request-log-usage", s.mgmt.GetRequestLogUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
@@ -1092,7 +1103,97 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	html, errRead := s.readManagementHTML(filePath)
+	if errRead != nil {
+		if errors.Is(errRead, os.ErrNotExist) {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		log.WithError(errRead).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Content-Length", strconv.Itoa(len(html)))
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Data(http.StatusOK, "text/html; charset=utf-8", html)
+}
+
+func (s *Server) readManagementHTML(filePath string) ([]byte, error) {
+	file, errOpen := os.Open(filePath)
+	if errOpen != nil {
+		return nil, errOpen
+	}
+	info, errStat := file.Stat()
+	if errStat != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat management control panel asset: %w", errStat)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("management control panel asset is not a regular file")
+	}
+	if info.Size() > maxManagementHTMLSize {
+		_ = file.Close()
+		return nil, fmt.Errorf("management control panel asset exceeds %d bytes", maxManagementHTMLSize)
+	}
+
+	s.managementHTMLCacheMu.Lock()
+	if s.managementHTMLCachePath == filePath &&
+		s.managementHTMLCacheSize == info.Size() &&
+		s.managementHTMLCacheModTime.Equal(info.ModTime()) &&
+		len(s.managementHTMLCache) > 0 {
+		html := s.managementHTMLCache
+		s.managementHTMLCacheMu.Unlock()
+		if errClose := file.Close(); errClose != nil {
+			return nil, fmt.Errorf("close management control panel asset: %w", errClose)
+		}
+		return html, nil
+	}
+	s.managementHTMLCacheMu.Unlock()
+
+	html, errRead := io.ReadAll(io.LimitReader(file, maxManagementHTMLSize+1))
+	errClose := file.Close()
+	if errRead != nil {
+		return nil, fmt.Errorf("read management control panel asset: %w", errRead)
+	}
+	if errClose != nil {
+		return nil, fmt.Errorf("close management control panel asset: %w", errClose)
+	}
+	if len(html) > maxManagementHTMLSize {
+		return nil, fmt.Errorf("management control panel asset exceeds %d bytes", maxManagementHTMLSize)
+	}
+	html = managementasset.InjectRequestLogUsageScript(html)
+	s.managementHTMLCacheMu.Lock()
+	s.managementHTMLCachePath = filePath
+	s.managementHTMLCacheModTime = info.ModTime()
+	s.managementHTMLCacheSize = info.Size()
+	s.managementHTMLCache = html
+	s.managementHTMLCacheMu.Unlock()
+	return html, nil
+}
+
+func (s *Server) serveRequestLogUsageScript(c *gin.Context) {
+	cfg := s.cfg
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	script := managementasset.RequestLogUsageScript()
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Type", "application/javascript; charset=utf-8")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Length", strconv.Itoa(len(script)))
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Data(http.StatusOK, "application/javascript; charset=utf-8", script)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

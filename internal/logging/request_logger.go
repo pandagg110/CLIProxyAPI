@@ -11,11 +11,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -550,7 +552,7 @@ func (l *FileRequestLogger) SetAPIKeyNames(keys, names []string) {
 		if index >= len(names) {
 			break
 		}
-		name := sanitizeAPIKeyName(names[index])
+		name := SanitizeAPIKeyName(names[index])
 		if strings.TrimSpace(key) != "" && name != "" {
 			next[key] = name
 		}
@@ -580,7 +582,8 @@ func (l *FileRequestLogger) ForAPIKey(apiKey string) RequestLogger {
 	return &clone
 }
 
-func sanitizeAPIKeyName(name string) string {
+// SanitizeAPIKeyName returns the safe directory label used for a configured API key name.
+func SanitizeAPIKeyName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ""
@@ -763,42 +766,32 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		responseToWrite = response
 	}
 
-	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if errOpen != nil {
-		return fmt.Errorf("failed to create log file: %w", errOpen)
-	}
-
-	writeErr := l.writeNonStreamingLog(
-		logFile,
-		url,
-		method,
-		requestHeaders,
-		body,
-		requestBodyPath,
-		websocketTimeline,
-		websocketTimelineSource,
-		apiRequest,
-		apiRequestSource,
-		apiResponse,
-		apiResponseSource,
-		apiWebsocketTimeline,
-		apiWebsocketTimelineSource,
-		apiResponseErrors,
-		statusCode,
-		responseHeaders,
-		responseToWrite,
-		decompressErr,
-		requestTimestamp,
-		apiResponseTimestamp,
-	)
-	if errClose := logFile.Close(); errClose != nil {
-		log.WithError(errClose).Warn("failed to close request log file")
-		if writeErr == nil {
-			return errClose
-		}
-	}
-	if writeErr != nil {
-		return fmt.Errorf("failed to write log file: %w", writeErr)
+	if errPublish := publishRequestLog(filePath, func(logFile *os.File) error {
+		return l.writeNonStreamingLog(
+			logFile,
+			url,
+			method,
+			requestHeaders,
+			body,
+			requestBodyPath,
+			websocketTimeline,
+			websocketTimelineSource,
+			apiRequest,
+			apiRequestSource,
+			apiResponse,
+			apiResponseSource,
+			apiWebsocketTimeline,
+			apiWebsocketTimelineSource,
+			apiResponseErrors,
+			statusCode,
+			responseHeaders,
+			responseToWrite,
+			decompressErr,
+			requestTimestamp,
+			apiResponseTimestamp,
+		)
+	}); errPublish != nil {
+		return fmt.Errorf("failed to publish log file: %w", errPublish)
 	}
 
 	if force && !l.enabled {
@@ -1039,6 +1032,90 @@ func (l *FileRequestLogger) writeRequestBodyTempFile(body []byte) (string, error
 		return "", errClose
 	}
 	return tmpPath, nil
+}
+
+func publishRequestLog(filePath string, writeLog func(*os.File) error) (err error) {
+	tempFile, errCreate := os.CreateTemp(filepath.Dir(filePath), ".request-log-*.tmp")
+	if errCreate != nil {
+		return fmt.Errorf("create request log temp file: %w", errCreate)
+	}
+	tempPath := tempFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			if errClose := tempFile.Close(); errClose != nil && err == nil {
+				err = fmt.Errorf("close request log temp file: %w", errClose)
+			}
+		}
+		if errRemove := os.Remove(tempPath); errRemove != nil && !os.IsNotExist(errRemove) {
+			if err == nil {
+				err = fmt.Errorf("remove request log temp file: %w", errRemove)
+			} else {
+				err = fmt.Errorf("%w; remove request log temp file: %v", err, errRemove)
+			}
+		}
+	}()
+
+	if errChmod := tempFile.Chmod(0644); errChmod != nil {
+		return fmt.Errorf("set request log temp file permissions: %w", errChmod)
+	}
+	if writeLog == nil {
+		return fmt.Errorf("request log writer is nil")
+	}
+	if errWrite := writeLog(tempFile); errWrite != nil {
+		return fmt.Errorf("write request log temp file: %w", errWrite)
+	}
+	if errSync := tempFile.Sync(); errSync != nil {
+		return fmt.Errorf("sync request log temp file: %w", errSync)
+	}
+	errClose := tempFile.Close()
+	closed = true
+	if errClose != nil {
+		return fmt.Errorf("close request log temp file: %w", errClose)
+	}
+	publishedPath, errPublish := linkRequestLogWithoutOverwrite(tempPath, filePath)
+	if errPublish != nil {
+		return errPublish
+	}
+	if errRemove := os.Remove(tempPath); errRemove != nil {
+		return fmt.Errorf("remove linked request log temp file: %w", errRemove)
+	}
+	if errSyncDir := syncRequestLogDirectory(publishedPath); errSyncDir != nil {
+		return errSyncDir
+	}
+	return nil
+}
+
+func linkRequestLogWithoutOverwrite(tempPath, filePath string) (string, error) {
+	extension := filepath.Ext(filePath)
+	base := strings.TrimSuffix(filePath, extension)
+	for attempt := uint64(0); ; attempt++ {
+		candidate := filePath
+		if attempt > 0 {
+			candidate = fmt.Sprintf("%s-duplicate-%d%s", base, requestLogID.Add(1), extension)
+		}
+		if errLink := os.Link(tempPath, candidate); errLink == nil {
+			return candidate, nil
+		} else if !os.IsExist(errLink) {
+			return "", fmt.Errorf("publish request log without overwrite: %w", errLink)
+		}
+	}
+}
+
+func syncRequestLogDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, errOpen := os.Open(filepath.Dir(path))
+	if errOpen != nil {
+		return fmt.Errorf("open request log directory for sync: %w", errOpen)
+	}
+	errSync := directory.Sync()
+	errClose := directory.Close()
+	if errCombined := errors.Join(errSync, errClose); errCombined != nil {
+		return fmt.Errorf("sync request log directory: %w", errCombined)
+	}
+	return nil
 }
 
 func (l *FileRequestLogger) writeNonStreamingLog(
@@ -1951,22 +2028,11 @@ func (w *FileStreamingLogWriter) Close() error {
 		return nil
 	}
 
-	logFile, errOpen := os.OpenFile(w.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if errOpen != nil {
-		w.cleanupTempFiles()
-		return fmt.Errorf("failed to create log file: %w", errOpen)
+	defer w.cleanupTempFiles()
+	if errPublish := publishRequestLog(w.logFilePath, w.writeFinalLog); errPublish != nil {
+		return fmt.Errorf("failed to publish streaming log file: %w", errPublish)
 	}
-
-	writeErr := w.writeFinalLog(logFile)
-	if errClose := logFile.Close(); errClose != nil {
-		log.WithError(errClose).Warn("failed to close request log file")
-		if writeErr == nil {
-			writeErr = errClose
-		}
-	}
-
-	w.cleanupTempFiles()
-	return writeErr
+	return nil
 }
 
 // asyncWriter runs in a goroutine to buffer chunks from the channel.

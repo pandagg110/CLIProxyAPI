@@ -16,6 +16,7 @@ import (
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -598,6 +599,27 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	}
 }
 
+func TestManagementRequestLogUsageRequiresManagementAuth(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+
+	missingKeyReq := httptest.NewRequest(http.MethodGet, "/v0/management/request-log-usage", nil)
+	missingKeyRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(missingKeyRR, missingKeyReq)
+	if missingKeyRR.Code != http.StatusUnauthorized {
+		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/request-log-usage", nil)
+	authReq.Header.Set("Authorization", "Bearer test-management-key")
+	authRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(authRR, authReq)
+	if authRR.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d, want %d body=%s", authRR.Code, http.StatusOK, authRR.Body.String())
+	}
+}
+
 func TestManagementPluginsRouteRegistered(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
@@ -714,6 +736,158 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 
 	t.Run("management control panel returns 404", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+	})
+}
+
+func TestManagementControlPanelInjectsRequestLogUsageScript(t *testing.T) {
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	original := []byte("<!doctype html><html><body><main>management app</main></body></html>")
+	assetPath := filepath.Join(staticDir, "management.html")
+	if errWrite := os.WriteFile(assetPath, original, 0o600); errWrite != nil {
+		t.Fatalf("write management asset: %v", errWrite)
+	}
+
+	server := newTestServer(t)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/management.html", nil)
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Fatalf("Content-Type = %q, want text/html", got)
+			}
+			if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if method == http.MethodHead {
+				if rr.Body.Len() != 0 {
+					t.Fatalf("HEAD body length = %d, want 0", rr.Body.Len())
+				}
+				return
+			}
+			if got := strings.Count(rr.Body.String(), managementasset.RequestLogUsageScriptPath); got != 1 {
+				t.Fatalf("script path count = %d, want 1 body=%s", got, rr.Body.String())
+			}
+		})
+	}
+
+	stored, errRead := os.ReadFile(assetPath)
+	if errRead != nil {
+		t.Fatalf("read stored management asset: %v", errRead)
+	}
+	if string(stored) != string(original) {
+		t.Fatalf("stored management asset was modified: %s", stored)
+	}
+}
+
+func TestManagementControlPanelRejectsOversizedAsset(t *testing.T) {
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	assetPath := filepath.Join(staticDir, "management.html")
+	file, errCreate := os.Create(assetPath)
+	if errCreate != nil {
+		t.Fatalf("create management asset: %v", errCreate)
+	}
+	if errTruncate := file.Truncate(maxManagementHTMLSize + 1); errTruncate != nil {
+		_ = file.Close()
+		t.Fatalf("truncate management asset: %v", errTruncate)
+	}
+	if errClose := file.Close(); errClose != nil {
+		t.Fatalf("close management asset: %v", errClose)
+	}
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusInternalServerError, rr.Body.String())
+	}
+}
+
+func TestManagementControlPanelCacheRefreshesAfterAssetChange(t *testing.T) {
+	staticDir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", staticDir)
+	assetPath := filepath.Join(staticDir, "management.html")
+	if errWrite := os.WriteFile(assetPath, []byte("<html><head></head><body>first</body></html>"), 0o600); errWrite != nil {
+		t.Fatalf("write first management asset: %v", errWrite)
+	}
+	server := newTestServer(t)
+
+	requestBody := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		return rr.Body.String()
+	}
+	if body := requestBody(); !strings.Contains(body, "first") {
+		t.Fatalf("first management asset was not served: %s", body)
+	}
+	if errWrite := os.WriteFile(assetPath, []byte("<html><head></head><body>second-version</body></html>"), 0o600); errWrite != nil {
+		t.Fatalf("write second management asset: %v", errWrite)
+	}
+	if body := requestBody(); !strings.Contains(body, "second-version") || strings.Contains(body, ">first<") {
+		t.Fatalf("management asset cache did not refresh: %s", body)
+	}
+}
+
+func TestRequestLogUsageScriptRoute(t *testing.T) {
+	server := newTestServer(t)
+
+	t.Run("serves javascript", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, managementasset.RequestLogUsageScriptPath, nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/javascript") {
+			t.Fatalf("Content-Type = %q, want application/javascript", got)
+		}
+		if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("Cache-Control = %q, want no-store", got)
+		}
+		if rr.Body.Len() == 0 {
+			t.Fatal("javascript response is empty")
+		}
+	})
+
+	t.Run("disabled control panel returns not found", func(t *testing.T) {
+		server.cfg.RemoteManagement.DisableControlPanel = true
+		t.Cleanup(func() { server.cfg.RemoteManagement.DisableControlPanel = false })
+
+		req := httptest.NewRequest(http.MethodGet, managementasset.RequestLogUsageScriptPath, nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+	})
+
+	t.Run("home mode returns not found", func(t *testing.T) {
+		server.cfg.RemoteManagement.DisableControlPanel = false
+		server.cfg.Home.Enabled = true
+		t.Cleanup(func() { server.cfg.Home.Enabled = false })
+
+		req := httptest.NewRequest(http.MethodGet, managementasset.RequestLogUsageScriptPath, nil)
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {

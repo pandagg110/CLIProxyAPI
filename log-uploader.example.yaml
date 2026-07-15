@@ -1,0 +1,37 @@
+# Request logs from every key_name and model are grouped into one archive per completed hour.
+# New archive filenames use the fixed codex56sol label; it is not a model filter.
+# Existing all-models objects keep their historical names and are not renamed.
+logs-root: auths/logs/keys
+
+# Local archives, audit records, state, and temporary files are stored here.
+work-dir: auths/log-uploader
+timezone: Asia/Shanghai
+
+schedule:
+  # With 1h and a 5m settle delay, the service runs at 5 minutes past each hour.
+  interval: 1h
+  # Scan all completed historical hours immediately after startup; the current hour is skipped.
+  run-on-start: true
+  # Wait after each hourly boundary and ignore files modified recently.
+  settle-delay: 5m
+
+upload:
+  # Keep disabled until the TOS credentials and a dry run have been verified.
+  enabled: false
+  # Use the native Volcengine TOS endpoint; S3-compatible endpoints are rejected.
+  endpoint: https://tos-cn-beijing.volces.com
+  region: cn-beijing
+  bucket: llm-d1
+  object-prefix: cliproxy-logs
+
+  # Store credential values in the environment or the repository-root .env file.
+  access-key-id-env: VOLC_TOS_ACCESS_KEY_ID
+  secret-access-key-env: VOLC_TOS_SECRET_ACCESS_KEY
+  # Optional for temporary credentials; leave the referenced variable unset otherwise.
+  session-token-env: VOLC_TOS_SESSION_TOKEN
+
+retention:
+  # Delete source .log files only after the remote upload and local state are durable.
+  delete-source-after-upload: true
+  # Remove the generated .jsonl.zst after a successful upload to avoid local disk growth.
+  keep-local-archives: false
