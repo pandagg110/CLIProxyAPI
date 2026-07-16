@@ -30,7 +30,7 @@ services:
 
   log-uploader:
     image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
-    pull_policy: always
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
