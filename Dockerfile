@@ -15,6 +15,7 @@ ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
+RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -o ./log-uploader ./cmd/log-uploader/
 
 FROM debian:bookworm
 
@@ -23,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certi
 RUN mkdir /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
+COPY --from=builder ./app/log-uploader /CLIProxyAPI/log-uploader
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 
