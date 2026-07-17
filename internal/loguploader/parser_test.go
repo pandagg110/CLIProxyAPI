@@ -153,11 +153,17 @@ func TestArchiveFilenameAndHumanSize(t *testing.T) {
 
 	location := mustLocation(t, "Asia/Shanghai")
 	hour := time.Date(2026, time.July, 15, 1, 0, 0, 0, location)
-	if got, want := makeArchiveFilename(hour, 2<<30), "2026-07-15-01-codex56sol-2G.jsonl.zst"; got != want {
+	if got, want := makeArchiveFilename(hour, 2<<30, 0), "2026-07-15-01-codex56sol-2G.jsonl.zst"; got != want {
 		t.Errorf("archive filename = %q, want %q", got, want)
 	}
-	if got, want := makeArchiveFilename(hour, 1536), "2026-07-15-01-codex56sol-1.5K.jsonl.zst"; got != want {
+	if got, want := makeArchiveFilename(hour, 1536, 0), "2026-07-15-01-codex56sol-1.5K.jsonl.zst"; got != want {
 		t.Errorf("archive filename = %q, want %q", got, want)
+	}
+	if got, want := makeArchiveFilename(hour, 2<<30, 1), "2026-07-15-01-p2-codex56sol-2G.jsonl.zst"; got != want {
+		t.Errorf("split archive filename = %q, want %q", got, want)
+	}
+	if got, want := makeArchiveFilename(hour, 2<<30, 2), "2026-07-15-01-p3-codex56sol-2G.jsonl.zst"; got != want {
+		t.Errorf("split archive filename = %q, want %q", got, want)
 	}
 
 	tests := []struct {
