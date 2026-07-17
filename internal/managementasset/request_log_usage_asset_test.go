@@ -32,6 +32,8 @@ func TestRequestLogUsageScriptReturnsCopy(t *testing.T) {
 		[]byte("Authorization"),
 		[]byte("X-Management-Key"),
 		[]byte("Key 日志用量"),
+		[]byte("每日总量与每人用量"),
+		[]byte("payload.days"),
 		[]byte("clearCapturedAuth"),
 		[]byte("'unauthorized'"),
 		[]byte("'hashchange'"),

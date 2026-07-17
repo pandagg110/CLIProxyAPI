@@ -103,6 +103,20 @@ type requestLogUsageHour struct {
 	Keys        []requestLogUsageHourKey `json:"keys"`
 }
 
+type requestLogUsageDayKey struct {
+	KeyName     string                 `json:"key_name"`
+	SourceCount int64                  `json:"source_count"`
+	SourceBytes int64                  `json:"source_bytes"`
+	Models      []requestLogUsageModel `json:"models"`
+}
+
+type requestLogUsageDay struct {
+	Date        string                  `json:"date"`
+	SourceCount int64                   `json:"source_count"`
+	SourceBytes int64                   `json:"source_bytes"`
+	Keys        []requestLogUsageDayKey `json:"keys"`
+}
+
 type requestLogUsageTotals struct {
 	SourceCount  int64 `json:"source_count"`
 	SourceBytes  int64 `json:"source_bytes"`
@@ -117,6 +131,7 @@ type requestLogUsageResponse struct {
 	SourceBytesMeaning string                `json:"source_bytes_meaning"`
 	Totals             requestLogUsageTotals `json:"totals"`
 	Keys               []requestLogUsageKey  `json:"keys"`
+	Days               []requestLogUsageDay  `json:"days"`
 	Hours              []requestLogUsageHour `json:"hours"`
 	ParseErrors        []string              `json:"parse_errors"`
 }
@@ -137,6 +152,12 @@ type requestLogUsageAggregate struct {
 type requestLogUsagePending struct {
 	count int64
 	bytes int64
+}
+
+type requestLogUsageDayAggregate struct {
+	sourceCount int64
+	sourceBytes int64
+	keys        map[string]requestLogUsageAuditKey
 }
 
 type requestLogUsageConfiguredKey struct {
@@ -582,6 +603,11 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 	}
 	sort.Strings(hourKeys)
 	hours := make([]requestLogUsageHour, 0, len(hourKeys))
+	dailyAggregates := make(map[string]*requestLogUsageDayAggregate)
+	location := settings.location
+	if location == nil {
+		location = time.UTC
+	}
 	totals := requestLogUsageTotals{BatchCount: len(hourKeys)}
 	for _, hourKey := range hourKeys {
 		batch := batches[hourKey]
@@ -593,6 +619,14 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		}
 		_ = safeRequestLogUsageAdd(&totals.SourceCount, batch.sourceCount)
 		_ = safeRequestLogUsageAdd(&totals.SourceBytes, batch.sourceBytes)
+		dayKey := batch.hour.In(location).Format(time.DateOnly)
+		dayAggregate := dailyAggregates[dayKey]
+		if dayAggregate == nil {
+			dayAggregate = &requestLogUsageDayAggregate{keys: make(map[string]requestLogUsageAuditKey)}
+			dailyAggregates[dayKey] = dayAggregate
+		}
+		_ = safeRequestLogUsageAdd(&dayAggregate.sourceCount, batch.sourceCount)
+		_ = safeRequestLogUsageAdd(&dayAggregate.sourceBytes, batch.sourceBytes)
 
 		batchKeyNames := make([]string, 0, len(batch.keyNames))
 		for keyName := range batch.keyNames {
@@ -623,8 +657,53 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				_ = safeRequestLogUsageAdd(&current.SourceBytes, model.SourceBytes)
 				aggregate.models[modelName] = current
 			}
+
+			dailyKey := dayAggregate.keys[keyName]
+			_ = safeRequestLogUsageAdd(&dailyKey.SourceCount, key.SourceCount)
+			_ = safeRequestLogUsageAdd(&dailyKey.SourceBytes, key.SourceBytes)
+			if dailyKey.Models == nil {
+				dailyKey.Models = make(map[string]requestLogUsageAuditModel)
+			}
+			for modelName, model := range key.Models {
+				current := dailyKey.Models[modelName]
+				_ = safeRequestLogUsageAdd(&current.SourceCount, model.SourceCount)
+				_ = safeRequestLogUsageAdd(&current.SourceBytes, model.SourceBytes)
+				dailyKey.Models[modelName] = current
+			}
+			dayAggregate.keys[keyName] = dailyKey
 		}
 		hours = append(hours, hour)
+	}
+
+	dayKeys := make([]string, 0, len(dailyAggregates))
+	for dayKey := range dailyAggregates {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	sort.Strings(dayKeys)
+	days := make([]requestLogUsageDay, 0, len(dayKeys))
+	for _, dayKey := range dayKeys {
+		aggregate := dailyAggregates[dayKey]
+		day := requestLogUsageDay{
+			Date:        dayKey,
+			SourceCount: aggregate.sourceCount,
+			SourceBytes: aggregate.sourceBytes,
+			Keys:        make([]requestLogUsageDayKey, 0, len(aggregate.keys)),
+		}
+		keyNames := make([]string, 0, len(aggregate.keys))
+		for keyName := range aggregate.keys {
+			keyNames = append(keyNames, keyName)
+		}
+		sort.Strings(keyNames)
+		for _, keyName := range keyNames {
+			key := aggregate.keys[keyName]
+			day.Keys = append(day.Keys, requestLogUsageDayKey{
+				KeyName:     keyName,
+				SourceCount: key.SourceCount,
+				SourceBytes: key.SourceBytes,
+				Models:      requestLogUsageModels(key.Models),
+			})
+		}
+		days = append(days, day)
 	}
 
 	for keyName, value := range pending {
@@ -672,6 +751,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		SourceBytesMeaning: "complete raw .log file bytes before JSONL conversion and compression",
 		Totals:             totals,
 		Keys:               keys,
+		Days:               days,
 		Hours:              hours,
 		ParseErrors:        parseErrors,
 	}

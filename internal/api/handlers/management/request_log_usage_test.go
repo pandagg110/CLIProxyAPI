@@ -134,6 +134,12 @@ func TestGetRequestLogUsageAggregatesHistoryActiveAndPending(t *testing.T) {
 	if response.Hours[1].SourceCount != 7 {
 		t.Fatalf("final uploaded record did not override cleanup-pending: %+v", response.Hours[1])
 	}
+	if len(response.Days) != 1 || response.Days[0].Date != "2026-07-14" || response.Days[0].SourceCount != 11 || response.Days[0].SourceBytes != 525 {
+		t.Fatalf("daily totals = %+v", response.Days)
+	}
+	if len(response.Days[0].Keys) != 2 || response.Days[0].Keys[0].KeyName != "alice" || response.Days[0].Keys[0].SourceCount != 4 || response.Days[0].Keys[0].SourceBytes != 175 || response.Days[0].Keys[1].KeyName != "bob" || response.Days[0].Keys[1].SourceCount != 7 || response.Days[0].Keys[1].SourceBytes != 350 {
+		t.Fatalf("daily key totals = %+v", response.Days[0].Keys)
+	}
 
 	if got := requestLogUsageKeyByName(t, response.Keys, "alice"); got.SourceCount != 4 || got.SourceBytes != 175 || got.BatchCount != 2 || got.PendingCount != 2 || got.PendingBytes != 8 || !got.Configured {
 		t.Fatalf("alice = %+v", got)
@@ -148,6 +154,48 @@ func TestGetRequestLogUsageAggregatesHistoryActiveAndPending(t *testing.T) {
 	}
 	if response.Keys[0].KeyName != "alice" || response.Keys[1].KeyName != "bob" || response.Keys[2].KeyName != "zero" {
 		t.Fatalf("keys are not sorted: %+v", response.Keys)
+	}
+}
+
+func TestBuildRequestLogUsageResponseGroupsDaysInConfiguredTimezone(t *testing.T) {
+	location, errLocation := time.LoadLocation("Asia/Shanghai")
+	if errLocation != nil {
+		t.Fatalf("load timezone: %v", errLocation)
+	}
+	firstHour := time.Date(2026, 7, 14, 15, 0, 0, 0, time.UTC)
+	secondHour := firstHour.Add(time.Hour)
+	batches := map[string]requestLogUsageBatch{
+		firstHour.Format(time.RFC3339): {
+			hour:        firstHour,
+			sourceCount: 2,
+			sourceBytes: 20,
+			keyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(2, 20, "gpt", 2, 20),
+			},
+		},
+		secondHour.Format(time.RFC3339): {
+			hour:        secondHour,
+			sourceCount: 3,
+			sourceBytes: 30,
+			keyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(3, 30, "gpt", 3, 30),
+			},
+		},
+	}
+
+	response := buildRequestLogUsageResponse(requestLogUsageSettings{
+		timezone: "Asia/Shanghai",
+		location: location,
+	}, nil, batches, nil, nil)
+
+	if len(response.Days) != 2 {
+		t.Fatalf("days = %+v", response.Days)
+	}
+	if response.Days[0].Date != "2026-07-14" || response.Days[0].SourceCount != 2 || response.Days[0].SourceBytes != 20 {
+		t.Fatalf("first day = %+v", response.Days[0])
+	}
+	if response.Days[1].Date != "2026-07-15" || response.Days[1].SourceCount != 3 || response.Days[1].SourceBytes != 30 {
+		t.Fatalf("second day = %+v", response.Days[1])
 	}
 }
 

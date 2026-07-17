@@ -253,8 +253,8 @@
     var style = document.createElement('style');
     style.id = 'cpa-request-log-usage-style';
     style.textContent = [
-      '#cpa-request-log-usage-button{position:fixed;right:20px;bottom:20px;z-index:2147483000;border:0;border-radius:999px;padding:11px 16px;background:var(--primary-color,#2563eb);color:#fff;font:600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.22);cursor:pointer;transition:transform .16s ease,box-shadow .16s ease}',
-      '#cpa-request-log-usage-button:hover{transform:translateY(-1px);box-shadow:0 13px 34px rgba(0,0,0,.28)}',
+      '#cpa-request-log-usage-button{position:fixed;right:0;top:50%;z-index:2147483000;border:1px solid color-mix(in srgb,var(--primary-color,#2563eb) 72%,#fff);border-right:0;border-radius:12px 0 0 12px;padding:13px 9px;background:var(--primary-color,#2563eb);color:#fff;font:650 12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.08em;writing-mode:vertical-rl;box-shadow:0 10px 28px rgba(0,0,0,.2);cursor:pointer;transform:translateY(-50%);transition:transform .16s ease,box-shadow .16s ease,padding .16s ease}',
+      '#cpa-request-log-usage-button:hover{padding-right:11px;transform:translateY(-50%) translateX(-2px);box-shadow:0 13px 34px rgba(0,0,0,.26)}',
       '#cpa-request-log-usage-button:focus-visible,.cpa-rlu-button:focus-visible,.cpa-rlu-close:focus-visible{outline:3px solid color-mix(in srgb,var(--primary-color,#2563eb) 42%,transparent);outline-offset:2px}',
       '#cpa-request-log-usage-overlay[hidden]{display:none!important}',
       '#cpa-request-log-usage-overlay{position:fixed;inset:0;z-index:2147483001;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(8,12,20,.58);backdrop-filter:blur(3px);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
@@ -270,10 +270,12 @@
       '.cpa-rlu-status{min-height:20px;margin-bottom:12px;color:var(--text-secondary,#64748b);font-size:13px;line-height:1.5}',
       '.cpa-rlu-status[data-kind="error"]{padding:10px 12px;border:1px solid #ef444466;border-radius:9px;background:#ef444414;color:#b91c1c}',
       '.cpa-rlu-status[data-kind="warning"]{padding:10px 12px;border:1px solid #f59e0b66;border-radius:9px;background:#f59e0b14;color:#a16207}',
-      '.cpa-rlu-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px}',
+      '.cpa-rlu-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}',
       '.cpa-rlu-summary-card,.cpa-rlu-key-card{border:1px solid var(--border-color,#d8dee9);border-radius:12px;background:var(--bg-secondary,#f8fafc)}',
       '.cpa-rlu-summary-card{padding:12px 14px}.cpa-rlu-summary-label{display:block;color:var(--text-secondary,#64748b);font-size:12px}.cpa-rlu-summary-value{display:block;margin-top:5px;font-size:18px;font-weight:750;font-variant-numeric:tabular-nums}',
       '.cpa-rlu-note{margin:0 0 14px;padding:10px 12px;border-left:3px solid var(--primary-color,#2563eb);border-radius:6px;background:color-mix(in srgb,var(--primary-color,#2563eb) 8%,transparent);color:var(--text-secondary,#64748b);font-size:12px;line-height:1.6}',
+      '.cpa-rlu-daily{margin:0 0 16px;padding:15px;border:1px solid var(--border-color,#d8dee9);border-radius:12px;background:var(--bg-secondary,#f8fafc)}',
+      '.cpa-rlu-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:10px}.cpa-rlu-section-title{margin:0;font-size:16px;font-weight:750}.cpa-rlu-section-help{margin:0;color:var(--text-secondary,#64748b);font-size:11px}',
       '.cpa-rlu-key-list{display:grid;gap:12px}',
       '.cpa-rlu-key-card{padding:15px}',
       '.cpa-rlu-key-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}',
@@ -287,10 +289,11 @@
       '.cpa-rlu-details{margin-top:11px}.cpa-rlu-details>summary{cursor:pointer;color:var(--primary-color,#2563eb);font-size:12px;font-weight:650;user-select:none}',
       '.cpa-rlu-table-wrap{margin-top:9px;overflow-x:auto;border:1px solid var(--border-color,#d8dee9);border-radius:9px;background:var(--bg-primary,#fff)}',
       '.cpa-rlu-table{width:100%;border-collapse:collapse;min-width:590px;font-size:12px}.cpa-rlu-table th,.cpa-rlu-table td{padding:8px 10px;border-bottom:1px solid var(--border-color,#d8dee9);text-align:left;white-space:nowrap}.cpa-rlu-table th{color:var(--text-secondary,#64748b);font-weight:650}.cpa-rlu-table tr:last-child td{border-bottom:0}.cpa-rlu-table td:nth-child(n+2),.cpa-rlu-table th:nth-child(n+2){text-align:right}',
+      '.cpa-rlu-daily-table{min-width:max(680px,100%)}.cpa-rlu-daily-value{display:block;font-weight:700;font-variant-numeric:tabular-nums}.cpa-rlu-daily-count{display:block;margin-top:2px;color:var(--text-secondary,#64748b);font-size:10px}',
       '.cpa-rlu-empty{padding:34px 16px;text-align:center;color:var(--text-secondary,#64748b);font-size:14px}',
       '.cpa-rlu-footer{margin-top:13px;color:var(--text-secondary,#64748b);font-size:11px;line-height:1.5}',
-      '@media(prefers-color-scheme:dark){.cpa-rlu-panel{background:var(--bg-primary,#15181e);color:var(--text-primary,#eef2f7);border-color:var(--border-color,#343a46)}.cpa-rlu-summary-card,.cpa-rlu-key-card,.cpa-rlu-button,.cpa-rlu-close{background:var(--bg-secondary,#20242d);border-color:var(--border-color,#343a46)}.cpa-rlu-metric,.cpa-rlu-table-wrap,.cpa-rlu-badge,.cpa-rlu-model{background:var(--bg-primary,#15181e);border-color:var(--border-color,#343a46)}.cpa-rlu-status[data-kind="error"]{color:#fca5a5}.cpa-rlu-status[data-kind="warning"]{color:#fcd34d}}',
-      '@media(max-width:760px){#cpa-request-log-usage-button{right:12px;bottom:12px;padding:10px 13px}#cpa-request-log-usage-overlay{align-items:flex-end;padding:0}.cpa-rlu-panel{width:100%;max-height:92vh;border-radius:16px 16px 0 0}.cpa-rlu-header{padding:16px}.cpa-rlu-title{font-size:18px}.cpa-rlu-subtitle{font-size:12px}.cpa-rlu-body{padding:14px 14px 20px}.cpa-rlu-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.cpa-rlu-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+      '@media(prefers-color-scheme:dark){.cpa-rlu-panel{background:var(--bg-primary,#15181e);color:var(--text-primary,#eef2f7);border-color:var(--border-color,#343a46)}.cpa-rlu-summary-card,.cpa-rlu-key-card,.cpa-rlu-daily,.cpa-rlu-button,.cpa-rlu-close{background:var(--bg-secondary,#20242d);border-color:var(--border-color,#343a46)}.cpa-rlu-metric,.cpa-rlu-table-wrap,.cpa-rlu-badge,.cpa-rlu-model{background:var(--bg-primary,#15181e);border-color:var(--border-color,#343a46)}.cpa-rlu-status[data-kind="error"]{color:#fca5a5}.cpa-rlu-status[data-kind="warning"]{color:#fcd34d}}',
+      '@media(max-width:760px){#cpa-request-log-usage-button{top:42%;padding:11px 8px}#cpa-request-log-usage-overlay{align-items:flex-end;padding:0}.cpa-rlu-panel{width:100%;max-height:92vh;border-radius:16px 16px 0 0}.cpa-rlu-header{padding:16px}.cpa-rlu-title{font-size:18px}.cpa-rlu-subtitle{font-size:12px}.cpa-rlu-body{padding:14px 14px 20px}.cpa-rlu-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.cpa-rlu-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.cpa-rlu-section-head{align-items:flex-start;flex-direction:column;gap:4px}}',
       '@media(max-width:420px){.cpa-rlu-summary,.cpa-rlu-metrics{grid-template-columns:1fr}.cpa-rlu-key-head{align-items:flex-start;flex-direction:column}.cpa-rlu-badge{align-self:flex-start}}',
     ].join('');
     document.head.appendChild(style);
@@ -299,9 +302,10 @@
   function buildUI() {
     addStyles();
 
-    var launcher = element('button', '', 'Key 日志用量');
+    var launcher = element('button', '', '日志统计');
     launcher.id = 'cpa-request-log-usage-button';
     launcher.type = 'button';
+    launcher.setAttribute('aria-label', 'Key 日志用量');
     launcher.setAttribute('aria-haspopup', 'dialog');
     launcher.setAttribute('aria-controls', 'cpa-request-log-usage-overlay');
 
@@ -496,6 +500,24 @@
     return output;
   }
 
+  function daysForKey(payload, keyName) {
+    var output = [];
+    arrayValue(payload.days).forEach(function (day) {
+      arrayValue(day && day.keys).forEach(function (entry) {
+        if (String(entry && entry.key_name) !== keyName) {
+          return;
+        }
+        output.push({
+          date: day.date,
+          source_count: entry.source_count,
+          source_bytes: entry.source_bytes,
+          models: entry.models,
+        });
+      });
+    });
+    return output;
+  }
+
   function summaryCard(label, value) {
     var card = element('div', 'cpa-rlu-summary-card');
     card.appendChild(element('span', 'cpa-rlu-summary-label', label));
@@ -508,6 +530,115 @@
     card.appendChild(element('span', 'cpa-rlu-metric-label', label));
     card.appendChild(element('strong', 'cpa-rlu-metric-value', value));
     return card;
+  }
+
+  function appendDailyUsageCell(row, entry) {
+    var cell = element('td');
+    if (!entry) {
+      cell.textContent = '—';
+      row.appendChild(cell);
+      return;
+    }
+    cell.appendChild(element('span', 'cpa-rlu-daily-value', bytes(entry.source_bytes)));
+    cell.appendChild(element('span', 'cpa-rlu-daily-count', integer(entry.source_count) + ' 条'));
+    row.appendChild(cell);
+  }
+
+  function buildDailyOverview(days, keys) {
+    var displayNames = {};
+    arrayValue(keys).forEach(function (entry) {
+      var keyName = String((entry && entry.key_name) || '');
+      if (keyName) {
+        displayNames[keyName] = String((entry && entry.display_name) || keyName);
+      }
+    });
+
+    var dailyKeySet = {};
+    arrayValue(days).forEach(function (day) {
+      arrayValue(day && day.keys).forEach(function (entry) {
+        var keyName = String((entry && entry.key_name) || '');
+        if (keyName) {
+          dailyKeySet[keyName] = true;
+        }
+      });
+    });
+    var dailyKeyNames = Object.keys(dailyKeySet).sort(function (left, right) {
+      return String(displayNames[left] || left).localeCompare(String(displayNames[right] || right), 'zh-CN');
+    });
+
+    var section = element('section', 'cpa-rlu-daily');
+    var sectionHead = element('div', 'cpa-rlu-section-head');
+    sectionHead.appendChild(element('h3', 'cpa-rlu-section-title', '每日总量与每人用量'));
+    sectionHead.appendChild(element('p', 'cpa-rlu-section-help', '单元格显示原始大小 / 日志条数'));
+    section.appendChild(sectionHead);
+
+    var wrap = element('div', 'cpa-rlu-table-wrap');
+    var table = element('table', 'cpa-rlu-table cpa-rlu-daily-table');
+    var head = element('thead');
+    var headerRow = element('tr');
+    headerRow.appendChild(element('th', '', '日期'));
+    headerRow.appendChild(element('th', '', '每日总量'));
+    dailyKeyNames.forEach(function (keyName) {
+      headerRow.appendChild(element('th', '', displayNames[keyName] || keyName));
+    });
+    head.appendChild(headerRow);
+    table.appendChild(head);
+
+    var body = element('tbody');
+    arrayValue(days)
+      .slice()
+      .sort(function (left, right) {
+        return String((right && right.date) || '').localeCompare(String((left && left.date) || ''));
+      })
+      .forEach(function (day) {
+        var row = element('tr');
+        row.appendChild(element('td', '', String((day && day.date) || '—')));
+        appendDailyUsageCell(row, day);
+        var entries = {};
+        arrayValue(day && day.keys).forEach(function (entry) {
+          entries[String((entry && entry.key_name) || '')] = entry;
+        });
+        dailyKeyNames.forEach(function (keyName) {
+          appendDailyUsageCell(row, entries[keyName]);
+        });
+        body.appendChild(row);
+      });
+    table.appendChild(body);
+    wrap.appendChild(table);
+    section.appendChild(wrap);
+    return section;
+  }
+
+  function buildDayTable(days) {
+    var details = element('details', 'cpa-rlu-details');
+    details.appendChild(element('summary', '', '按日明细（' + integer(days.length) + ' 天）'));
+    var wrap = element('div', 'cpa-rlu-table-wrap');
+    var table = element('table', 'cpa-rlu-table');
+    var head = element('thead');
+    var headerRow = element('tr');
+    ['日期', '日志数', '原始大小', '模型'].forEach(function (label) {
+      headerRow.appendChild(element('th', '', label));
+    });
+    head.appendChild(headerRow);
+    table.appendChild(head);
+    var body = element('tbody');
+    days
+      .slice()
+      .sort(function (left, right) {
+        return String((right && right.date) || '').localeCompare(String((left && left.date) || ''));
+      })
+      .forEach(function (day) {
+        var row = element('tr');
+        row.appendChild(element('td', '', String((day && day.date) || '—')));
+        row.appendChild(element('td', '', integer(day.source_count)));
+        row.appendChild(element('td', '', bytes(day.source_bytes)));
+        row.appendChild(element('td', '', modelText(day.models) || '—'));
+        body.appendChild(row);
+      });
+    table.appendChild(body);
+    wrap.appendChild(table);
+    details.appendChild(wrap);
+    return details;
   }
 
   function buildHourTable(hours, timezone) {
@@ -541,6 +672,7 @@
     var fragment = document.createDocumentFragment();
     var totals = payload && typeof payload.totals === 'object' ? payload.totals : {};
     var keys = arrayValue(payload && payload.keys);
+    var days = arrayValue(payload && payload.days);
     var timezone = String((payload && payload.timezone) || '');
 
     var summary = element('div', 'cpa-rlu-summary');
@@ -553,6 +685,7 @@
       )
     );
     summary.appendChild(summaryCard('小时批次', integer(totals.batch_count)));
+    summary.appendChild(summaryCard('统计天数', integer(days.length)));
     summary.appendChild(summaryCard('Key 数量', integer(totals.key_count || keys.length)));
     fragment.appendChild(summary);
 
@@ -563,6 +696,10 @@
         '大小按完整原始 .log 文件计算，不是压缩包分摊值。本地尚存日志在保留源文件或清理未完成时可能已上传。Key 改名后，旧名称会作为独立历史记录保留。'
       )
     );
+
+    if (days.length > 0) {
+      fragment.appendChild(buildDailyOverview(days, keys));
+    }
 
     if (keys.length === 0) {
       fragment.appendChild(element('div', 'cpa-rlu-empty', '暂时没有 Key 日志用量记录。'));
@@ -609,6 +746,11 @@
               modelList.appendChild(element('span', 'cpa-rlu-model', modelText([model])));
             });
             card.appendChild(modelList);
+          }
+
+          var keyDays = daysForKey(payload, keyName);
+          if (keyDays.length > 0) {
+            card.appendChild(buildDayTable(keyDays));
           }
 
           var keyHours = hoursForKey(payload, keyName);
