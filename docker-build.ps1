@@ -36,6 +36,7 @@ switch ($choice) {
 
         # Build and start the services with a local-only image tag
         $env:CLI_PROXY_IMAGE = "cli-proxy-api:local"
+        $env:DOCKER_BUILDKIT = "1"
         
         Write-Host "Building the Docker image..."
         docker compose build --build-arg VERSION=$VERSION --build-arg COMMIT=$COMMIT --build-arg BUILD_DATE=$BUILD_DATE
