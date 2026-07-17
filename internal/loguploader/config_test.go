@@ -16,8 +16,8 @@ func TestExampleConfigLoadsWithHourlyProductionDefaults(t *testing.T) {
 	if errLoad != nil {
 		t.Fatalf("load example config: %v", errLoad)
 	}
-	if cfg.Schedule.Interval != time.Hour || cfg.Schedule.SettleDelay != 5*time.Minute {
-		t.Errorf("schedule = interval %s, settle %s", cfg.Schedule.Interval, cfg.Schedule.SettleDelay)
+	if cfg.Schedule.Interval != time.Hour || cfg.Schedule.SettleDelay != 5*time.Minute || cfg.Schedule.CatchUpDelay != 5*time.Minute {
+		t.Errorf("schedule = interval %s, settle %s, catch-up %s", cfg.Schedule.Interval, cfg.Schedule.SettleDelay, cfg.Schedule.CatchUpDelay)
 	}
 	if cfg.Upload.Enabled {
 		t.Errorf("example unexpectedly enables upload")

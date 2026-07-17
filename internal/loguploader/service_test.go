@@ -900,8 +900,9 @@ func testConfig(root, workDir string) Config {
 		WorkDir:  workDir,
 		Timezone: "Asia/Shanghai",
 		Schedule: ScheduleConfig{
-			Interval:    time.Hour,
-			SettleDelay: 0,
+			Interval:     time.Hour,
+			SettleDelay:  0,
+			CatchUpDelay: 5 * time.Minute,
 		},
 		Upload: UploadConfig{
 			Endpoint:     "https://tos-cn-beijing.volces.com",

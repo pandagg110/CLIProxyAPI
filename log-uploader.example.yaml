@@ -14,6 +14,9 @@ schedule:
   run-on-start: true
   # Wait after each hourly boundary and ignore files modified recently.
   settle-delay: 5m
+  # When previous runs left pending hours (e.g. upload failures), retry this quickly
+  # instead of waiting for the next scheduled run.
+  catch-up-delay: 5m
 
 upload:
   # Keep disabled until the TOS credentials and a dry run have been verified.

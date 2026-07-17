@@ -25,11 +25,13 @@ type Config struct {
 }
 
 type ScheduleConfig struct {
-	Interval    time.Duration `yaml:"-"`
-	IntervalRaw string        `yaml:"interval"`
-	RunOnStart  bool          `yaml:"run-on-start"`
-	SettleDelay time.Duration `yaml:"-"`
-	SettleRaw   string        `yaml:"settle-delay"`
+	Interval     time.Duration `yaml:"-"`
+	IntervalRaw  string        `yaml:"interval"`
+	RunOnStart   bool          `yaml:"run-on-start"`
+	SettleDelay  time.Duration `yaml:"-"`
+	SettleRaw    string        `yaml:"settle-delay"`
+	CatchUpDelay time.Duration `yaml:"-"`
+	CatchUpRaw   string        `yaml:"catch-up-delay"`
 }
 
 type UploadConfig struct {
@@ -97,6 +99,9 @@ func applyConfigDefaults(cfg *Config) {
 	if strings.TrimSpace(cfg.Schedule.SettleRaw) == "" {
 		cfg.Schedule.SettleRaw = "5m"
 	}
+	if strings.TrimSpace(cfg.Schedule.CatchUpRaw) == "" {
+		cfg.Schedule.CatchUpRaw = "5m"
+	}
 	if strings.TrimSpace(cfg.Upload.Endpoint) == "" {
 		cfg.Upload.Endpoint = "https://tos-cn-beijing.volces.com"
 	}
@@ -132,6 +137,12 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("schedule.settle-delay must be shorter than schedule.interval")
 	}
 	cfg.Schedule.SettleDelay = settleDelay
+
+	catchUpDelay, errCatchUp := time.ParseDuration(cfg.Schedule.CatchUpRaw)
+	if errCatchUp != nil || catchUpDelay <= 0 {
+		return fmt.Errorf("invalid schedule.catch-up-delay %q", cfg.Schedule.CatchUpRaw)
+	}
+	cfg.Schedule.CatchUpDelay = catchUpDelay
 
 	if _, errLocation := time.LoadLocation(cfg.Timezone); errLocation != nil {
 		return fmt.Errorf("invalid timezone %q: %w", cfg.Timezone, errLocation)

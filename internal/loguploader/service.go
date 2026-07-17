@@ -172,9 +172,8 @@ func (s *Service) run(ctx context.Context, dryRun bool) error {
 		}
 	}
 	for {
-		now := s.now().In(s.location)
-		next := nextScheduledRun(now, s.cfg.Schedule.Interval, s.cfg.Schedule.SettleDelay)
-		timer := time.NewTimer(time.Until(next))
+		delay := s.nextDelay()
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -190,6 +189,19 @@ func (s *Service) run(ctx context.Context, dryRun bool) error {
 			}
 		}
 	}
+}
+
+// nextDelay returns the wait duration until the next run.
+// When there are pending hours from previous failures, it uses the shorter
+// catch-up delay instead of the full interval to reduce backlog faster.
+func (s *Service) nextDelay() time.Duration {
+	state, errLoad := s.loadState()
+	if errLoad != nil || len(state.PreparedHours) == 0 {
+		now := s.now().In(s.location)
+		return time.Until(nextScheduledRun(now, s.cfg.Schedule.Interval, s.cfg.Schedule.SettleDelay))
+	}
+	log.WithField("pending_hours", len(state.PreparedHours)).Info("pending hours detected; using catch-up delay")
+	return s.cfg.Schedule.CatchUpDelay
 }
 
 func nextScheduledRun(now time.Time, interval, settleDelay time.Duration) time.Time {
