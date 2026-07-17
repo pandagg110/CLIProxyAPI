@@ -147,9 +147,9 @@ func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, pa
 
 	var parts []tos.UploadedPartV2
 	partNumber := 1
-	offset := int64(0)
+	var offset int64
 	for offset < fileSize {
-		size := tosMultipartPartSize
+		var size int64 = tosMultipartPartSize
 		if offset+size > fileSize {
 			size = fileSize - offset
 		}
