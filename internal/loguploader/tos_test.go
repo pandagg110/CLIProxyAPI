@@ -47,6 +47,22 @@ func (c *fakeTOSObjectClient) HeadObjectV2(_ context.Context, input *tos.HeadObj
 	return c.headResult, c.headErr
 }
 
+func (c *fakeTOSObjectClient) CreateMultipartUploadV2(_ context.Context, input *tos.CreateMultipartUploadV2Input) (*tos.CreateMultipartUploadV2Output, error) {
+	return &tos.CreateMultipartUploadV2Output{UploadID: "test-upload-id"}, nil
+}
+
+func (c *fakeTOSObjectClient) UploadPartFromFile(_ context.Context, input *tos.UploadPartFromFileInput) (*tos.UploadPartFromFileOutput, error) {
+	return &tos.UploadPartFromFileOutput{UploadPartV2Output: tos.UploadPartV2Output{ETag: "test-etag", PartNumber: input.PartNumber}}, nil
+}
+
+func (c *fakeTOSObjectClient) CompleteMultipartUploadV2(_ context.Context, input *tos.CompleteMultipartUploadV2Input) (*tos.CompleteMultipartUploadV2Output, error) {
+	return &tos.CompleteMultipartUploadV2Output{}, nil
+}
+
+func (c *fakeTOSObjectClient) AbortMultipartUpload(_ context.Context, input *tos.AbortMultipartUploadInput) (*tos.AbortMultipartUploadOutput, error) {
+	return &tos.AbortMultipartUploadOutput{}, nil
+}
+
 type fakeTOSMetadata map[string]string
 
 func (m fakeTOSMetadata) AllKeys() []string {

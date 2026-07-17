@@ -21,6 +21,10 @@ const archiveChecksumMetadataKey = "cliproxy-sha256"
 type tosObjectClient interface {
 	PutObjectFromFile(context.Context, *tos.PutObjectFromFileInput) (*tos.PutObjectFromFileOutput, error)
 	HeadObjectV2(context.Context, *tos.HeadObjectV2Input) (*tos.HeadObjectV2Output, error)
+	CreateMultipartUploadV2(context.Context, *tos.CreateMultipartUploadV2Input) (*tos.CreateMultipartUploadV2Output, error)
+	UploadPartFromFile(context.Context, *tos.UploadPartFromFileInput) (*tos.UploadPartFromFileOutput, error)
+	CompleteMultipartUploadV2(context.Context, *tos.CompleteMultipartUploadV2Input) (*tos.CompleteMultipartUploadV2Output, error)
+	AbortMultipartUpload(context.Context, *tos.AbortMultipartUploadInput) (*tos.AbortMultipartUploadOutput, error)
 }
 
 // TOSUploader uploads archives through the native Volcengine TOS endpoint.
@@ -85,6 +89,13 @@ func parseTOSEndpoint(value string) (string, error) {
 }
 
 func (u *TOSUploader) UploadFile(ctx context.Context, bucket, objectKey, path string) error {
+	fileInfo, errStat := os.Stat(path)
+	if errStat != nil {
+		return fmt.Errorf("stat archive for upload: %w", errStat)
+	}
+	if fileInfo.Size() > tosMaxSinglePutSize {
+		return u.uploadMultipart(ctx, bucket, objectKey, path, fileInfo.Size())
+	}
 	checksum, _, errChecksum := fileSHA256(path)
 	if errChecksum != nil {
 		return errChecksum
@@ -109,6 +120,80 @@ func (u *TOSUploader) UploadFile(ctx context.Context, bucket, objectKey, path st
 			return fmt.Errorf("%w for %s: %w", ErrObjectConflict, objectKey, errUpload)
 		}
 		return fmt.Errorf("put TOS object: %w", errUpload)
+	}
+	return nil
+}
+
+// tosMaxSinglePutSize is the TOS single PUT limit (5 GiB).
+const tosMaxSinglePutSize = 5 * 1024 * 1024 * 1024
+
+// tosMultipartPartSize is the size of each part for multipart uploads (100 MiB).
+const tosMultipartPartSize = 100 * 1024 * 1024
+
+func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, path string, fileSize int64) error {
+	createOut, errCreate := u.client.CreateMultipartUploadV2(ctx, &tos.CreateMultipartUploadV2Input{
+		Bucket:          bucket,
+		Key:             objectKey,
+		ContentType:     "application/zstd",
+		ForbidOverwrite: true,
+		Meta: map[string]string{
+			archiveChecksumMetadataKey: "multipart",
+		},
+	})
+	if errCreate != nil {
+		return fmt.Errorf("create multipart upload: %w", errCreate)
+	}
+	uploadID := createOut.UploadID
+
+	var parts []tos.UploadedPartV2
+	partNumber := 1
+	offset := int64(0)
+	for offset < fileSize {
+		size := tosMultipartPartSize
+		if offset+size > fileSize {
+			size = fileSize - offset
+		}
+		partOut, errPart := u.client.UploadPartFromFile(ctx, &tos.UploadPartFromFileInput{
+			UploadPartBasicInput: tos.UploadPartBasicInput{
+				Bucket:     bucket,
+				Key:        objectKey,
+				UploadID:   uploadID,
+				PartNumber: partNumber,
+			},
+			FilePath: path,
+			Offset:   uint64(offset),
+			PartSize: size,
+		})
+		if errPart != nil {
+			_, _ = u.client.AbortMultipartUpload(ctx, &tos.AbortMultipartUploadInput{
+				Bucket:   bucket,
+				Key:      objectKey,
+				UploadID: uploadID,
+			})
+			return fmt.Errorf("upload part %d: %w", partNumber, errPart)
+		}
+		parts = append(parts, tos.UploadedPartV2{
+			PartNumber: partNumber,
+			ETag:       partOut.ETag,
+		})
+		offset += size
+		partNumber++
+	}
+
+	_, errComplete := u.client.CompleteMultipartUploadV2(ctx, &tos.CompleteMultipartUploadV2Input{
+		Bucket:          bucket,
+		Key:             objectKey,
+		UploadID:        uploadID,
+		ForbidOverwrite: true,
+		Parts:           parts,
+	})
+	if errComplete != nil {
+		_, _ = u.client.AbortMultipartUpload(ctx, &tos.AbortMultipartUploadInput{
+			Bucket:   bucket,
+			Key:      objectKey,
+			UploadID: uploadID,
+		})
+		return fmt.Errorf("complete multipart upload: %w", errComplete)
 	}
 	return nil
 }
