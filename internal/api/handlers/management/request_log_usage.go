@@ -452,8 +452,34 @@ func readRequestLogUsageAudit(path, label string, location *time.Location, batch
 			continue
 		}
 		hourKey := batch.hour.Format(time.RFC3339)
-		if previous, exists := batches[hourKey]; !exists || batch.statusRank >= previous.statusRank {
+		previous, exists := batches[hourKey]
+		if !exists {
 			batches[hourKey] = batch
+		} else if batch.statusRank > previous.statusRank {
+			// Higher-status record replaces lower-status (e.g. "uploaded" supersedes "uploaded_cleanup_pending").
+			batches[hourKey] = batch
+		} else if batch.statusRank == previous.statusRank {
+			// Same hour and same status means multiple parts of a split archive;
+			// accumulate source counts and key-level details instead of overwriting.
+			previous.sourceCount += batch.sourceCount
+			previous.sourceBytes += batch.sourceBytes
+			for keyName, key := range batch.keyNames {
+				existing, found := previous.keyNames[keyName]
+				if !found {
+					previous.keyNames[keyName] = key
+					continue
+				}
+				existing.SourceCount += key.SourceCount
+				existing.SourceBytes += key.SourceBytes
+				for modelName, model := range key.Models {
+					em := existing.Models[modelName]
+					em.SourceCount += model.SourceCount
+					em.SourceBytes += model.SourceBytes
+					existing.Models[modelName] = em
+				}
+				previous.keyNames[keyName] = existing
+			}
+			batches[hourKey] = previous
 		}
 	}
 	if deferredLastError != "" && endsWithNewline {
