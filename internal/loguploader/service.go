@@ -372,11 +372,11 @@ func groupSources(sources []sourceLog) map[time.Time][]sourceLog {
 	return groups
 }
 
-// maxArchiveSourceBytes is the maximum total source log size (4 GiB) allowed in
-// a single hourly archive batch. The JSONL wrapper expands source data by ~1.4x
-// and zstd compression achieves ~0.45x, so 4 GiB of sources produces roughly
-// 2.5 GiB of compressed output — well under the TOS 5 GiB single-object limit.
-const maxArchiveSourceBytes = 4 * 1024 * 1024 * 1024
+// maxArchiveSourceBytes is the maximum total source log size (12 GiB) allowed in
+// a single hourly archive batch. When source data exceeds this threshold, sources
+// are split across multiple archives to keep compressed output well under the TOS
+// 5 GiB single-object PUT limit.
+const maxArchiveSourceBytes = 12 * 1024 * 1024 * 1024
 
 func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []sourceLog, state uploadState, dryRun bool) error {
 	var totalSourceBytes int64
