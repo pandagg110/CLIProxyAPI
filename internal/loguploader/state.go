@@ -159,11 +159,7 @@ func (s *Service) validateUploadState(state *uploadState) error {
 		if prepared.TargetID != s.target.ID || prepared.ObjectKey == "" || !isSHA256(prepared.ArchiveSHA256) || len(prepared.Sources) == 0 {
 			return fmt.Errorf("prepared hour %s is missing trusted batch metadata", hourKey)
 		}
-		if prepared.Hour.IsZero() {
-			return fmt.Errorf("prepared hour %s has zero timestamp", hourKey)
-		}
-		baseHour := hourStateKey(prepared.Hour.In(s.location))
-		if baseHour != hourKey && !strings.HasPrefix(hourKey, baseHour+"-p") {
+		if prepared.Hour.IsZero() || hourStateKey(prepared.Hour.In(s.location)) != hourKey {
 			return fmt.Errorf("prepared hour %s does not match its state key", hourKey)
 		}
 		if _, sealed := state.Hours[hourKey]; sealed {
@@ -200,22 +196,8 @@ func (s *Service) validateUploadState(state *uploadState) error {
 }
 
 func (s *Service) validateHourStateKey(hourKey string) error {
-	base := hourKey
-	if idx := strings.Index(hourKey, "-p"); idx > 0 {
-		suffix := hourKey[idx+2:]
-		allDigits := len(suffix) > 0
-		for _, c := range suffix {
-			if c < '0' || c > '9' {
-				allDigits = false
-				break
-			}
-		}
-		if allDigits {
-			base = hourKey[:idx]
-		}
-	}
-	hour, errParse := time.ParseInLocation("2006-01-02-15", base, s.location)
-	if errParse != nil || hourStateKey(hour) != base {
+	hour, errParse := time.ParseInLocation("2006-01-02-15", hourKey, s.location)
+	if errParse != nil || hourStateKey(hour) != hourKey {
 		return fmt.Errorf("invalid upload state hour key %q", hourKey)
 	}
 	return nil

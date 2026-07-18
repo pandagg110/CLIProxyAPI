@@ -413,12 +413,8 @@ func sanitizeName(value, fallback string) string {
 	return strings.ToLower(builder.String())
 }
 
-func makeArchiveFilename(hour time.Time, size int64, part int) string {
-	label := archiveNameLabel
-	if part > 0 {
-		label = fmt.Sprintf("p%d-%s", part+1, archiveNameLabel)
-	}
-	return fmt.Sprintf("%s-%s-%s.jsonl.zst", hour.Format("2006-01-02-15"), label, humanSize(size))
+func makeArchiveFilename(hour time.Time, size int64) string {
+	return fmt.Sprintf("%s-%s-%s.jsonl.zst", hour.Format("2006-01-02-15"), archiveNameLabel, humanSize(size))
 }
 
 func humanSize(size int64) string {

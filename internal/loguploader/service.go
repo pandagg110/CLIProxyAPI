@@ -372,58 +372,7 @@ func groupSources(sources []sourceLog) map[time.Time][]sourceLog {
 	return groups
 }
 
-// maxArchiveSourceBytes is the maximum total source log size (12 GiB) allowed in
-// a single hourly archive batch. When source data exceeds this threshold, sources
-// are split across multiple archives to keep compressed output well under the TOS
-// 5 GiB single-object PUT limit.
-const maxArchiveSourceBytes = 12 * 1024 * 1024 * 1024
-
 func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []sourceLog, state uploadState, dryRun bool) error {
-	var totalSourceBytes int64
-	for _, src := range sources {
-		totalSourceBytes += src.Size
-	}
-
-	if totalSourceBytes <= maxArchiveSourceBytes || len(sources) <= 1 {
-		return s.processSingleBatch(ctx, hour, sources, state, dryRun, 0)
-	}
-
-	numParts := int((totalSourceBytes + maxArchiveSourceBytes - 1) / maxArchiveSourceBytes)
-	log.WithFields(log.Fields{
-		"hour":         hour.Format(time.RFC3339),
-		"total_bytes":  totalSourceBytes,
-		"num_parts":    numParts,
-		"source_count": len(sources),
-	}).Info("splitting oversized hourly batch into multiple archives")
-
-	batches := splitSources(sources, numParts)
-	var batchErrors []error
-	for i, batch := range batches {
-		if errProcess := s.processSingleBatch(ctx, hour, batch, state, dryRun, i); errProcess != nil {
-			batchErrors = append(batchErrors, errProcess)
-		}
-	}
-	return errors.Join(batchErrors...)
-}
-
-// splitSources distributes sources into numParts roughly equal-sized batches using
-// round-robin assignment to balance sizes across parts.
-func splitSources(sources []sourceLog, numParts int) [][]sourceLog {
-	if numParts <= 1 || len(sources) == 0 {
-		return [][]sourceLog{sources}
-	}
-	if numParts > len(sources) {
-		numParts = len(sources)
-	}
-	batches := make([][]sourceLog, numParts)
-	for i, source := range sources {
-		part := i % numParts
-		batches[part] = append(batches[part], source)
-	}
-	return batches
-}
-
-func (s *Service) processSingleBatch(ctx context.Context, hour time.Time, sources []sourceLog, state uploadState, dryRun bool, partIndex int) error {
 	record := auditRecord{
 		Timestamp:   s.now().In(s.location),
 		Hour:        hour,
@@ -444,26 +393,22 @@ func (s *Service) processSingleBatch(ctx context.Context, hour time.Time, source
 		keySummary.Models[source.Model] = modelSummary
 		record.KeyNames[source.KeyName] = keySummary
 	}
-	hk := hourStateKey(hour)
-	if partIndex > 0 {
-		hk = fmt.Sprintf("%s-p%d", hk, partIndex+1)
-	}
-	if finalized, exists := state.Hours[hk]; exists && !dryRun {
-		cause := fmt.Errorf("archive hour %s is already finalized as %s; retaining %d late source logs", hk, finalized.ObjectKey, len(sources))
+	if finalized, exists := state.Hours[hourStateKey(hour)]; exists && !dryRun {
+		cause := fmt.Errorf("archive hour %s is already finalized as %s; retaining %d late source logs", hour.Format(time.RFC3339), finalized.ObjectKey, len(sources))
 		record.Status = "late_logs_retained"
 		record.ObjectKey = finalized.ObjectKey
 		record.Error = cause.Error()
 		return errors.Join(cause, s.appendAudit(record))
 	}
-	if prepared, exists := state.PreparedHours[hk]; exists && !dryRun {
-		cause := fmt.Errorf("archive hour %s already has prepared object %s; retaining newly discovered source logs", hk, prepared.ObjectKey)
+	if prepared, exists := state.PreparedHours[hourStateKey(hour)]; exists && !dryRun {
+		cause := fmt.Errorf("archive hour %s already has prepared object %s; retaining newly discovered source logs", hour.Format(time.RFC3339), prepared.ObjectKey)
 		record.Status = "prepared_hour_blocked"
 		record.ObjectKey = prepared.ObjectKey
 		record.Error = cause.Error()
 		return errors.Join(cause, s.appendAudit(record))
 	}
 
-	archivePath, jsonlSize, compressedSize, errArchive := s.buildArchive(ctx, hour, sources, dryRun, partIndex)
+	archivePath, jsonlSize, compressedSize, errArchive := s.buildArchive(ctx, hour, sources, dryRun)
 	if errArchive != nil {
 		return s.recordBatchFailure(record, fmt.Errorf("build archive for hour %s: %w", hour.Format(time.RFC3339), errArchive))
 	}
@@ -522,12 +467,13 @@ func (s *Service) processSingleBatch(ctx context.Context, hour time.Time, source
 		})
 	}
 	prepared.ManifestSHA256 = manifestSHA256(prepared.Sources)
-	state.PreparedHours[hk] = prepared
+	hourKey := hourStateKey(hour)
+	state.PreparedHours[hourKey] = prepared
 	if errSave := s.saveState(state); errSave != nil {
-		delete(state.PreparedHours, hk)
+		delete(state.PreparedHours, hourKey)
 		return s.recordBatchFailure(record, fmt.Errorf("persist prepared hourly batch: %w", errSave))
 	}
-	return s.completePreparedHour(ctx, hk, prepared, state)
+	return s.completePreparedHour(ctx, hourKey, prepared, state)
 }
 
 func (s *Service) recordBatchFailure(record auditRecord, cause error) error {
@@ -536,7 +482,7 @@ func (s *Service) recordBatchFailure(record auditRecord, cause error) error {
 	return errors.Join(cause, s.appendAudit(record))
 }
 
-func (s *Service) buildArchive(ctx context.Context, hour time.Time, sources []sourceLog, dryRun bool, partIndex int) (string, int64, int64, error) {
+func (s *Service) buildArchive(ctx context.Context, hour time.Time, sources []sourceLog, dryRun bool) (string, int64, int64, error) {
 	archiveRoot := "archives"
 	if dryRun {
 		archiveRoot = "dry-run-archives"
@@ -591,15 +537,12 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, sources []so
 		return "", 0, 0, fmt.Errorf("write Zstandard archive: %w", errCombined)
 	}
 
-	archiveFilename := makeArchiveFilename(hour, jsonlSize, partIndex)
+	archiveFilename := makeArchiveFilename(hour, jsonlSize)
 	archivePath := filepath.Join(archiveDir, archiveFilename)
 	if dryRun {
-		for _, pattern := range []string{
-			fmt.Sprintf("%s-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), archiveNameLabel),
-			fmt.Sprintf("%s-p*-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), archiveNameLabel),
-			fmt.Sprintf("%s-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), legacyArchiveNameLabel),
-		} {
-			staleArchives, errGlob := filepath.Glob(filepath.Join(archiveDir, pattern))
+		for _, label := range []string{archiveNameLabel, legacyArchiveNameLabel} {
+			stalePattern := filepath.Join(archiveDir, fmt.Sprintf("%s-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), label))
+			staleArchives, errGlob := filepath.Glob(stalePattern)
 			if errGlob != nil {
 				_ = os.Remove(tmpPath)
 				return "", 0, 0, fmt.Errorf("find stale dry-run hourly archives: %w", errGlob)
