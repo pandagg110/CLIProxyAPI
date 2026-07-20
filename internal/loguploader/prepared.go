@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -17,12 +18,20 @@ func (s *Service) resumePreparedHours(ctx context.Context, state uploadState) er
 		hourKeys = append(hourKeys, hourKey)
 	}
 	sort.Strings(hourKeys)
+	if len(hourKeys) > 0 {
+		log.WithField("count", len(hourKeys)).Info("resuming prepared hours")
+	}
 	var resumeErrors []error
 	for _, hourKey := range hourKeys {
 		prepared, exists := state.PreparedHours[hourKey]
 		if !exists {
 			continue
 		}
+		log.WithFields(log.Fields{
+			"hour":           prepared.Hour.Format(time.RFC3339),
+			"object_key":     prepared.ObjectKey,
+			"archive_size":   prepared.CompressedBytes,
+		}).Info("resuming prepared hour")
 		if errComplete := s.completePreparedHour(ctx, hourKey, prepared, state); errComplete != nil {
 			resumeErrors = append(resumeErrors, errComplete)
 		}
@@ -43,17 +52,25 @@ func (s *Service) completePreparedHour(ctx context.Context, hourKey string, prep
 	if errPath != nil {
 		return s.recordBatchFailure(record, errPath)
 	}
-	archiveSHA256, archiveSize, errChecksum := fileSHA256(archivePath)
-	if errChecksum != nil {
-		return s.recordBatchFailure(record, fmt.Errorf("verify prepared archive: %w", errChecksum))
+	// Fast verification: check file size only. SHA256 was already computed
+	// and stored in state.json during processBatch. Re-hashing a 10+ GB
+	// archive on every resume adds tens of minutes of delay.
+	info, errStat := os.Stat(archivePath)
+	if errStat != nil {
+		return s.recordBatchFailure(record, fmt.Errorf("stat prepared archive: %w", errStat))
 	}
-	if archiveSHA256 != prepared.ArchiveSHA256 || archiveSize != prepared.CompressedBytes {
-		return s.recordBatchFailure(record, fmt.Errorf("prepared archive changed: checksum=%s size=%d, want checksum=%s size=%d", archiveSHA256, archiveSize, prepared.ArchiveSHA256, prepared.CompressedBytes))
+	if info.Size() != prepared.CompressedBytes {
+		return s.recordBatchFailure(record, fmt.Errorf("prepared archive size mismatch: got %d, want %d", info.Size(), prepared.CompressedBytes))
 	}
+	log.WithFields(log.Fields{
+		"hour":         prepared.Hour.Format(time.RFC3339),
+		"archive_size": info.Size(),
+	}).Info("prepared archive verified (size check)")
 	if s.uploader == nil {
 		return s.recordBatchFailure(record, fmt.Errorf("upload is enabled but no object uploader is configured"))
 	}
 
+	uploadStart := s.now()
 	errUpload := s.uploader.UploadFile(ctx, s.cfg.Upload.Bucket, prepared.ObjectKey, archivePath)
 	if errors.Is(errUpload, ErrObjectConflict) {
 		matcher, supportsMatch := s.uploader.(ObjectMatcher)
@@ -73,6 +90,12 @@ func (s *Service) completePreparedHour(ctx context.Context, hourKey string, prep
 	if errUpload != nil {
 		return s.recordBatchFailure(record, fmt.Errorf("upload %s: %w", prepared.ObjectKey, errUpload))
 	}
+	log.WithFields(log.Fields{
+		"hour":             prepared.Hour.Format(time.RFC3339),
+		"object_key":       prepared.ObjectKey,
+		"archive_size":     info.Size(),
+		"upload_duration":  s.now().Sub(uploadStart).String(),
+	}).Info("prepared hour uploaded")
 
 	needsCleanup := s.cfg.Retention.DeleteSourceAfterUpload || !s.cfg.Retention.KeepLocalArchives
 	preCleanupRecord := record

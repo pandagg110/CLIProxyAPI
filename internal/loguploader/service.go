@@ -173,6 +173,11 @@ func (s *Service) run(ctx context.Context, dryRun bool) error {
 	}
 	for {
 		delay := s.nextDelay()
+		nextRun := s.now().Add(delay)
+		log.WithFields(log.Fields{
+			"delay":   delay.String(),
+			"next_run": nextRun.Format(time.RFC3339),
+		}).Info("scheduler waiting for next run")
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -226,6 +231,8 @@ func (s *Service) RunOnce(ctx context.Context, dryRun bool) (runErr error) {
 }
 
 func (s *Service) runOnce(ctx context.Context, dryRun bool) error {
+	runStart := s.now()
+	log.WithField("dry_run", dryRun).Info("log uploader run started")
 	if !s.cfg.Upload.Enabled && !dryRun {
 		return fmt.Errorf("upload is disabled; use dry-run for local conversion testing")
 	}
@@ -245,9 +252,14 @@ func (s *Service) runOnce(ctx context.Context, dryRun bool) error {
 			}
 		}
 	}
+	log.WithFields(log.Fields{
+		"prepared_hours": len(state.PreparedHours),
+		"sealed_hours":   len(state.Hours),
+	}).Info("state loaded")
 	var runErrors []error
 	if !dryRun {
 		if errResume := s.resumePreparedHours(ctx, state); errResume != nil {
+			log.WithError(errResume).Error("resume prepared hours failed")
 			runErrors = append(runErrors, errResume)
 		}
 	}
@@ -273,12 +285,14 @@ func (s *Service) runOnce(ctx context.Context, dryRun bool) error {
 			log.WithError(errDelete).Warn("uploaded local archive is still pending deletion")
 		}
 	}
+	scanStart := s.now()
 	sources, errScan := s.scanSources(state)
 	if errScan != nil {
 		return errScan
 	}
 	if len(sources) == 0 {
-		log.Debug("no settled request logs are ready for upload")
+		log.WithField("scan_duration", s.now().Sub(scanStart).String()).Debug("no settled request logs are ready for upload")
+		log.WithField("total_duration", s.now().Sub(runStart).String()).Info("log uploader run completed (no work)")
 		return errors.Join(runErrors...)
 	}
 
@@ -291,11 +305,22 @@ func (s *Service) runOnce(ctx context.Context, dryRun bool) error {
 		return hours[i].Before(hours[j])
 	})
 
+	log.WithFields(log.Fields{
+		"source_files": len(sources),
+		"pending_hours": len(hours),
+		"first_hour":   hours[0].Format(time.RFC3339),
+		"last_hour":    hours[len(hours)-1].Format(time.RFC3339),
+	}).Info("processing pending hours")
+
 	for _, hour := range hours {
 		if errProcess := s.processBatch(ctx, hour, groups[hour], state, dryRun); errProcess != nil {
 			runErrors = append(runErrors, errProcess)
 		}
 	}
+	log.WithFields(log.Fields{
+		"total_duration": s.now().Sub(runStart).String(),
+		"errors":         len(runErrors),
+	}).Info("log uploader run completed")
 	return errors.Join(runErrors...)
 }
 
@@ -408,10 +433,18 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 		return errors.Join(cause, s.appendAudit(record))
 	}
 
+	archiveStart := s.now()
 	archivePath, jsonlSize, compressedSize, errArchive := s.buildArchive(ctx, hour, sources, dryRun)
 	if errArchive != nil {
 		return s.recordBatchFailure(record, fmt.Errorf("build archive for hour %s: %w", hour.Format(time.RFC3339), errArchive))
 	}
+	log.WithFields(log.Fields{
+		"hour":             hour.Format(time.RFC3339),
+		"source_files":     len(sources),
+		"jsonl_bytes":      jsonlSize,
+		"compressed_bytes": compressedSize,
+		"archive_duration": s.now().Sub(archiveStart).String(),
+	}).Info("archive built")
 	record.JSONLBytes = jsonlSize
 	record.ArchivePath = archivePath
 	record.CompressedBytes = compressedSize
@@ -434,10 +467,16 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 	if s.uploader == nil {
 		return s.recordBatchFailure(record, fmt.Errorf("upload is enabled but no object uploader is configured"))
 	}
+	shaStart := s.now()
 	archiveSHA256, archiveSize, errChecksum := fileSHA256(archivePath)
 	if errChecksum != nil {
 		return s.recordBatchFailure(record, errChecksum)
 	}
+	log.WithFields(log.Fields{
+		"hour":           hour.Format(time.RFC3339),
+		"archive_size":   archiveSize,
+		"sha256_duration": s.now().Sub(shaStart).String(),
+	}).Info("archive checksum computed")
 	if archiveSize != compressedSize {
 		return s.recordBatchFailure(record, fmt.Errorf("compressed archive size changed before preparation: got %d, want %d", archiveSize, compressedSize))
 	}

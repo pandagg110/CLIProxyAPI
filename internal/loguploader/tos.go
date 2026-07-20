@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
@@ -137,6 +138,7 @@ const tosMultipartPartSize = 64 * 1024 * 1024
 const tosMultipartConcurrency = 8
 
 func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, path string, fileSize int64) error {
+	multipartStart := time.Now()
 	createOut, errCreate := u.client.CreateMultipartUploadV2(ctx, &tos.CreateMultipartUploadV2Input{
 		Bucket:          bucket,
 		Key:             objectKey,
@@ -207,6 +209,7 @@ func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, pa
 						"error":       errPart.Error(),
 					}).Warn("retrying multipart upload part")
 				}
+				partStart := time.Now()
 				partOut, errPart = u.client.UploadPartFromFile(ctx, &tos.UploadPartFromFileInput{
 					UploadPartBasicInput: tos.UploadPartBasicInput{
 						Bucket:     bucket,
@@ -219,6 +222,12 @@ func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, pa
 					PartSize: s.size,
 				})
 				if errPart == nil {
+					log.WithFields(log.Fields{
+						"part_number": s.number,
+						"total_parts": totalParts,
+						"size_mb":     s.size / (1024 * 1024),
+						"duration":    time.Since(partStart).String(),
+					}).Info("multipart part uploaded")
 					break
 				}
 				if ctx.Err() != nil {
@@ -271,6 +280,12 @@ func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, pa
 		})
 		return fmt.Errorf("complete multipart upload: %w", errComplete)
 	}
+	log.WithFields(log.Fields{
+		"object_key":      objectKey,
+		"file_size_mb":    fileSize / (1024 * 1024),
+		"total_parts":     totalParts,
+		"total_duration":  time.Since(multipartStart).String(),
+	}).Info("multipart upload completed")
 	return nil
 }
 
