@@ -8,8 +8,11 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos/codes"
 )
@@ -127,8 +130,11 @@ func (u *TOSUploader) UploadFile(ctx context.Context, bucket, objectKey, path st
 // tosMaxSinglePutSize is the TOS single PUT limit (5 GiB).
 const tosMaxSinglePutSize = 5 * 1024 * 1024 * 1024
 
-// tosMultipartPartSize is the size of each part for multipart uploads (100 MiB).
-const tosMultipartPartSize = 100 * 1024 * 1024
+// tosMultipartPartSize is the size of each part for multipart uploads (64 MiB).
+const tosMultipartPartSize = 64 * 1024 * 1024
+
+// tosMultipartConcurrency is the number of parts uploaded in parallel.
+const tosMultipartConcurrency = 8
 
 func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, path string, fileSize int64) error {
 	createOut, errCreate := u.client.CreateMultipartUploadV2(ctx, &tos.CreateMultipartUploadV2Input{
@@ -145,40 +151,110 @@ func (u *TOSUploader) uploadMultipart(ctx context.Context, bucket, objectKey, pa
 	}
 	uploadID := createOut.UploadID
 
-	var parts []tos.UploadedPartV2
-	partNumber := 1
+	// Pre-calculate all parts.
+	type partSpec struct {
+		number int
+		offset int64
+		size   int64
+	}
+	var specs []partSpec
 	var offset int64
+	num := 1
 	for offset < fileSize {
 		var size int64 = tosMultipartPartSize
 		if offset+size > fileSize {
 			size = fileSize - offset
 		}
-		partOut, errPart := u.client.UploadPartFromFile(ctx, &tos.UploadPartFromFileInput{
-			UploadPartBasicInput: tos.UploadPartBasicInput{
-				Bucket:     bucket,
-				Key:        objectKey,
-				UploadID:   uploadID,
-				PartNumber: partNumber,
-			},
-			FilePath: path,
-			Offset:   uint64(offset),
-			PartSize: size,
-		})
-		if errPart != nil {
-			_, _ = u.client.AbortMultipartUpload(ctx, &tos.AbortMultipartUploadInput{
-				Bucket:   bucket,
-				Key:      objectKey,
-				UploadID: uploadID,
-			})
-			return fmt.Errorf("upload part %d: %w", partNumber, errPart)
-		}
-		parts = append(parts, tos.UploadedPartV2{
-			PartNumber: partNumber,
-			ETag:       partOut.ETag,
-		})
+		specs = append(specs, partSpec{number: num, offset: offset, size: size})
 		offset += size
-		partNumber++
+		num++
 	}
+
+	totalParts := len(specs)
+	log.WithFields(log.Fields{
+		"object_key":   objectKey,
+		"total_parts":  totalParts,
+		"part_size_mb": tosMultipartPartSize / (1024 * 1024),
+		"concurrency":  tosMultipartConcurrency,
+	}).Info("starting multipart upload")
+
+	// Upload parts with bounded concurrency.
+	var (
+		mu       sync.Mutex
+		parts    = make([]tos.UploadedPartV2, 0, totalParts)
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, tosMultipartConcurrency)
+
+	for _, spec := range specs {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(s partSpec) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			var partOut *tos.UploadPartFromFileOutput
+			var errPart error
+			for attempt := 0; attempt < 3; attempt++ {
+				if attempt > 0 {
+					log.WithFields(log.Fields{
+						"part_number": s.number,
+						"attempt":     attempt + 1,
+						"error":       errPart.Error(),
+					}).Warn("retrying multipart upload part")
+				}
+				partOut, errPart = u.client.UploadPartFromFile(ctx, &tos.UploadPartFromFileInput{
+					UploadPartBasicInput: tos.UploadPartBasicInput{
+						Bucket:     bucket,
+						Key:        objectKey,
+						UploadID:   uploadID,
+						PartNumber: s.number,
+					},
+					FilePath: path,
+					Offset:   uint64(s.offset),
+					PartSize: s.size,
+				})
+				if errPart == nil {
+					break
+				}
+				if ctx.Err() != nil {
+					break
+				}
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if errPart != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("upload part %d: %w", s.number, errPart)
+				}
+				return
+			}
+			parts = append(parts, tos.UploadedPartV2{
+				PartNumber: s.number,
+				ETag:       partOut.ETag,
+			})
+		}(spec)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		_, _ = u.client.AbortMultipartUpload(ctx, &tos.AbortMultipartUploadInput{
+			Bucket:   bucket,
+			Key:      objectKey,
+			UploadID: uploadID,
+		})
+		return firstErr
+	}
+
+	// Sort parts by part number (required by TOS).
+	sort.Slice(parts, func(i, j int) bool {
+		return parts[i].PartNumber < parts[j].PartNumber
+	})
 
 	_, errComplete := u.client.CompleteMultipartUploadV2(ctx, &tos.CompleteMultipartUploadV2Input{
 		Bucket:          bucket,
