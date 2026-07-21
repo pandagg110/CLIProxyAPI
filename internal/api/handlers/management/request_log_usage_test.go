@@ -157,6 +157,84 @@ func TestGetRequestLogUsageAggregatesHistoryActiveAndPending(t *testing.T) {
 	}
 }
 
+func TestGetRequestLogUsageSeparatesClaudeAndCodexProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	mustWriteRequestLogUsageFile(t, filepath.Join(root, "log-uploader.yaml"), []byte("logs-root: logs/keys\nwork-dir: work\ntimezone: Asia/Shanghai\n"))
+
+	hour := time.Date(2026, 7, 22, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	lines := []string{
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:   "uploaded",
+			Hour:     hour,
+			Provider: "codex",
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(2, 100, "gpt-5.6", 2, 100),
+			},
+		}),
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:   "uploaded",
+			Hour:     hour,
+			Provider: "fable5",
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(3, 300, "claude-fable-5", 3, 300),
+				"bob":   requestLogUsageAuditKeyWithModel(1, 50, "claude-fable-5", 1, 50),
+			},
+		}),
+	}
+	mustWriteRequestLogUsageFile(t, filepath.Join(workDir, "audit.jsonl"), []byte(strings.Join(lines, "\n")+"\n"))
+
+	handler := NewHandler(&config.Config{AuthDir: filepath.Join(root, "auths")}, filepath.Join(root, "config.yaml"), nil)
+	response, _ := performRequestLogUsage(t, handler)
+
+	if response.Totals.SourceCount != 6 || response.Totals.SourceBytes != 450 || response.Totals.BatchCount != 2 {
+		t.Fatalf("totals = %+v", response.Totals)
+	}
+	if len(response.Providers) != 2 {
+		t.Fatalf("providers = %+v", response.Providers)
+	}
+	if response.Providers[0].Provider != "codex" || response.Providers[0].SourceCount != 2 || response.Providers[0].SourceBytes != 100 {
+		t.Fatalf("codex provider summary = %+v", response.Providers[0])
+	}
+	if response.Providers[1].Provider != "fable5" || response.Providers[1].SourceCount != 4 || response.Providers[1].SourceBytes != 350 {
+		t.Fatalf("claude provider summary = %+v", response.Providers[1])
+	}
+
+	if len(response.Hours) != 2 {
+		t.Fatalf("hours = %+v", response.Hours)
+	}
+	if response.Hours[0].Provider != "codex" || response.Hours[1].Provider != "fable5" {
+		t.Fatalf("hour providers = %q, %q", response.Hours[0].Provider, response.Hours[1].Provider)
+	}
+
+	if len(response.Days) != 1 {
+		t.Fatalf("days = %+v", response.Days)
+	}
+	day := response.Days[0]
+	if len(day.Providers) != 2 || day.Providers[0].Provider != "codex" || day.Providers[0].SourceBytes != 100 || day.Providers[1].Provider != "fable5" || day.Providers[1].SourceBytes != 350 {
+		t.Fatalf("day providers = %+v", day.Providers)
+	}
+	if len(day.Keys) != 2 {
+		t.Fatalf("day keys = %+v", day.Keys)
+	}
+	if len(day.Keys[0].Providers) != 2 || day.Keys[0].KeyName != "alice" || day.Keys[0].Providers[0].Provider != "codex" || day.Keys[0].Providers[0].SourceBytes != 100 || day.Keys[0].Providers[1].Provider != "fable5" || day.Keys[0].Providers[1].SourceBytes != 300 {
+		t.Fatalf("alice day providers = %+v", day.Keys[0].Providers)
+	}
+	if len(day.Keys[1].Providers) != 1 || day.Keys[1].KeyName != "bob" || day.Keys[1].Providers[0].Provider != "fable5" || day.Keys[1].Providers[0].SourceBytes != 50 {
+		t.Fatalf("bob day providers = %+v", day.Keys[1].Providers)
+	}
+
+	alice := requestLogUsageKeyByName(t, response.Keys, "alice")
+	if len(alice.Providers) != 2 || alice.Providers[0].Provider != "codex" || alice.Providers[0].SourceCount != 2 || alice.Providers[1].Provider != "fable5" || alice.Providers[1].SourceCount != 3 {
+		t.Fatalf("alice key providers = %+v", alice.Providers)
+	}
+	bob := requestLogUsageKeyByName(t, response.Keys, "bob")
+	if len(bob.Providers) != 1 || bob.Providers[0].Provider != "fable5" || bob.Providers[0].SourceCount != 1 || bob.Providers[0].SourceBytes != 50 {
+		t.Fatalf("bob key providers = %+v", bob.Providers)
+	}
+}
+
 func TestBuildRequestLogUsageResponseGroupsDaysInConfiguredTimezone(t *testing.T) {
 	location, errLocation := time.LoadLocation("Asia/Shanghai")
 	if errLocation != nil {

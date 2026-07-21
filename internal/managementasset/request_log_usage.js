@@ -290,6 +290,10 @@
       '.cpa-rlu-table-wrap{margin-top:9px;overflow-x:auto;border:1px solid var(--border-color,#d8dee9);border-radius:9px;background:var(--bg-primary,#fff)}',
       '.cpa-rlu-table{width:100%;border-collapse:collapse;min-width:590px;font-size:12px}.cpa-rlu-table th,.cpa-rlu-table td{padding:8px 10px;border-bottom:1px solid var(--border-color,#d8dee9);text-align:left;white-space:nowrap}.cpa-rlu-table th{color:var(--text-secondary,#64748b);font-weight:650}.cpa-rlu-table tr:last-child td{border-bottom:0}.cpa-rlu-table td:nth-child(n+2),.cpa-rlu-table th:nth-child(n+2){text-align:right}',
       '.cpa-rlu-daily-table{min-width:max(680px,100%)}.cpa-rlu-daily-value{display:block;font-weight:700;font-variant-numeric:tabular-nums}.cpa-rlu-daily-count{display:block;margin-top:2px;color:var(--text-secondary,#64748b);font-size:10px}',
+      '.cpa-rlu-daily-provider{display:block;margin-top:2px;color:var(--text-secondary,#64748b);font-size:10px;font-variant-numeric:tabular-nums}',
+      '.cpa-rlu-daily-provider[data-provider="fable5"]{color:var(--primary-color,#2563eb);font-weight:650}',
+      '.cpa-rlu-provider{border:1px solid var(--border-color,#d8dee9);border-radius:999px;padding:3px 8px;background:var(--bg-primary,#fff);color:var(--text-secondary,#64748b);font-size:11px}',
+      '.cpa-rlu-provider[data-provider="fable5"]{border-color:color-mix(in srgb,var(--primary-color,#2563eb) 45%,var(--border-color,#d8dee9));color:var(--primary-color,#2563eb);font-weight:650}',
       '.cpa-rlu-empty{padding:34px 16px;text-align:center;color:var(--text-secondary,#64748b);font-size:14px}',
       '.cpa-rlu-footer{margin-top:13px;color:var(--text-secondary,#64748b);font-size:11px;line-height:1.5}',
       '@media(prefers-color-scheme:dark){.cpa-rlu-panel{background:var(--bg-primary,#15181e);color:var(--text-primary,#eef2f7);border-color:var(--border-color,#343a46)}.cpa-rlu-summary-card,.cpa-rlu-key-card,.cpa-rlu-daily,.cpa-rlu-button,.cpa-rlu-close{background:var(--bg-secondary,#20242d);border-color:var(--border-color,#343a46)}.cpa-rlu-metric,.cpa-rlu-table-wrap,.cpa-rlu-badge,.cpa-rlu-model{background:var(--bg-primary,#15181e);border-color:var(--border-color,#343a46)}.cpa-rlu-status[data-kind="error"]{color:#fca5a5}.cpa-rlu-status[data-kind="warning"]{color:#fcd34d}}',
@@ -473,6 +477,37 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function providerLabel(name) {
+    var normalized = String(name || '').toLowerCase();
+    if (normalized === 'fable5') {
+      return 'Claude';
+    }
+    if (normalized === 'codex') {
+      return 'GPT';
+    }
+    return String(name || 'unknown');
+  }
+
+  function providerEntries(value) {
+    return arrayValue(value).filter(function (entry) {
+      return entry && typeof entry === 'object';
+    });
+  }
+
+  function providerText(providers) {
+    return providerEntries(providers)
+      .map(function (entry) {
+        return (
+          providerLabel(entry.provider) +
+          ' · ' +
+          integer(entry.source_count) +
+          ' 条 · ' +
+          bytes(entry.source_bytes)
+        );
+      })
+      .join(' | ');
+  }
+
   function modelText(models) {
     return arrayValue(models)
       .map(function (model) {
@@ -491,6 +526,7 @@
         }
         output.push({
           hour: hour.hour,
+          provider: hour.provider,
           source_count: entry.source_count,
           source_bytes: entry.source_bytes,
           models: entry.models,
@@ -511,6 +547,7 @@
           date: day.date,
           source_count: entry.source_count,
           source_bytes: entry.source_bytes,
+          providers: entry.providers,
           models: entry.models,
         });
       });
@@ -541,6 +578,20 @@
     }
     cell.appendChild(element('span', 'cpa-rlu-daily-value', bytes(entry.source_bytes)));
     cell.appendChild(element('span', 'cpa-rlu-daily-count', integer(entry.source_count) + ' 条'));
+    providerEntries(entry.providers).forEach(function (providerEntry) {
+      var line = element(
+        'span',
+        'cpa-rlu-daily-provider',
+        providerLabel(providerEntry.provider) +
+          ' ' +
+          bytes(providerEntry.source_bytes) +
+          ' / ' +
+          integer(providerEntry.source_count) +
+          ' 条'
+      );
+      line.dataset.provider = String(providerEntry.provider || '');
+      cell.appendChild(line);
+    });
     row.appendChild(cell);
   }
 
@@ -616,7 +667,7 @@
     var table = element('table', 'cpa-rlu-table');
     var head = element('thead');
     var headerRow = element('tr');
-    ['日期', '日志数', '原始大小', '模型'].forEach(function (label) {
+    ['日期', '日志数', '原始大小', '来源', '模型'].forEach(function (label) {
       headerRow.appendChild(element('th', '', label));
     });
     head.appendChild(headerRow);
@@ -632,6 +683,7 @@
         row.appendChild(element('td', '', String((day && day.date) || '—')));
         row.appendChild(element('td', '', integer(day.source_count)));
         row.appendChild(element('td', '', bytes(day.source_bytes)));
+        row.appendChild(element('td', '', providerText(day.providers) || '—'));
         row.appendChild(element('td', '', modelText(day.models) || '—'));
         body.appendChild(row);
       });
@@ -648,7 +700,7 @@
     var table = element('table', 'cpa-rlu-table');
     var head = element('thead');
     var headerRow = element('tr');
-    ['小时', '日志数', '原始大小', '模型'].forEach(function (label) {
+    ['小时', '来源', '日志数', '原始大小', '模型'].forEach(function (label) {
       headerRow.appendChild(element('th', '', label));
     });
     head.appendChild(headerRow);
@@ -657,6 +709,7 @@
     hours.forEach(function (hour) {
       var row = element('tr');
       row.appendChild(element('td', '', dateTime(hour.hour, timezone)));
+      row.appendChild(element('td', '', hour.provider ? providerLabel(hour.provider) : '—'));
       row.appendChild(element('td', '', integer(hour.source_count)));
       row.appendChild(element('td', '', bytes(hour.source_bytes)));
       row.appendChild(element('td', '', modelText(hour.models) || '—'));
@@ -678,6 +731,14 @@
     var summary = element('div', 'cpa-rlu-summary');
     summary.appendChild(summaryCard('已上传原始日志', bytes(totals.source_bytes)));
     summary.appendChild(summaryCard('已上传日志数', integer(totals.source_count)));
+    providerEntries(payload && payload.providers).forEach(function (entry) {
+      summary.appendChild(
+        summaryCard(
+          providerLabel(entry.provider) + ' 日志',
+          bytes(entry.source_bytes) + ' / ' + integer(entry.source_count) + ' 条'
+        )
+      );
+    });
     summary.appendChild(
       summaryCard(
         '本地尚存日志',
@@ -738,6 +799,25 @@
             )
           );
           card.appendChild(metrics);
+
+          var providers = providerEntries(entry && entry.providers);
+          if (providers.length > 0) {
+            var providerList = element('div', 'cpa-rlu-models');
+            providers.forEach(function (providerEntry) {
+              var chip = element(
+                'span',
+                'cpa-rlu-provider',
+                providerLabel(providerEntry.provider) +
+                  ' · ' +
+                  integer(providerEntry.source_count) +
+                  ' 条 · ' +
+                  bytes(providerEntry.source_bytes)
+              );
+              chip.dataset.provider = String(providerEntry.provider || '');
+              providerList.appendChild(chip);
+            });
+            card.appendChild(providerList);
+          }
 
           var models = arrayValue(entry && entry.models);
           if (models.length > 0) {

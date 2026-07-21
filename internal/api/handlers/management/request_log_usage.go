@@ -77,18 +77,25 @@ type requestLogUsageModel struct {
 	SourceBytes int64  `json:"source_bytes"`
 }
 
+type requestLogUsageProviderUsage struct {
+	Provider    string `json:"provider"`
+	SourceCount int64  `json:"source_count"`
+	SourceBytes int64  `json:"source_bytes"`
+}
+
 type requestLogUsageKey struct {
-	KeyName      string                 `json:"key_name"`
-	DisplayName  string                 `json:"display_name"`
-	Configured   bool                   `json:"configured"`
-	SourceCount  int64                  `json:"source_count"`
-	SourceBytes  int64                  `json:"source_bytes"`
-	PendingCount int64                  `json:"pending_count"`
-	PendingBytes int64                  `json:"pending_bytes"`
-	BatchCount   int                    `json:"batch_count"`
-	FirstHour    string                 `json:"first_hour"`
-	LastHour     string                 `json:"last_hour"`
-	Models       []requestLogUsageModel `json:"models"`
+	KeyName      string                         `json:"key_name"`
+	DisplayName  string                         `json:"display_name"`
+	Configured   bool                           `json:"configured"`
+	SourceCount  int64                          `json:"source_count"`
+	SourceBytes  int64                          `json:"source_bytes"`
+	PendingCount int64                          `json:"pending_count"`
+	PendingBytes int64                          `json:"pending_bytes"`
+	BatchCount   int                            `json:"batch_count"`
+	FirstHour    string                         `json:"first_hour"`
+	LastHour     string                         `json:"last_hour"`
+	Providers    []requestLogUsageProviderUsage `json:"providers"`
+	Models       []requestLogUsageModel         `json:"models"`
 }
 
 type requestLogUsageHourKey struct {
@@ -100,23 +107,26 @@ type requestLogUsageHourKey struct {
 
 type requestLogUsageHour struct {
 	Hour        string                   `json:"hour"`
+	Provider    string                   `json:"provider"`
 	SourceCount int64                    `json:"source_count"`
 	SourceBytes int64                    `json:"source_bytes"`
 	Keys        []requestLogUsageHourKey `json:"keys"`
 }
 
 type requestLogUsageDayKey struct {
-	KeyName     string                 `json:"key_name"`
-	SourceCount int64                  `json:"source_count"`
-	SourceBytes int64                  `json:"source_bytes"`
-	Models      []requestLogUsageModel `json:"models"`
+	KeyName     string                         `json:"key_name"`
+	SourceCount int64                          `json:"source_count"`
+	SourceBytes int64                          `json:"source_bytes"`
+	Providers   []requestLogUsageProviderUsage `json:"providers"`
+	Models      []requestLogUsageModel         `json:"models"`
 }
 
 type requestLogUsageDay struct {
-	Date        string                  `json:"date"`
-	SourceCount int64                   `json:"source_count"`
-	SourceBytes int64                   `json:"source_bytes"`
-	Keys        []requestLogUsageDayKey `json:"keys"`
+	Date        string                         `json:"date"`
+	SourceCount int64                          `json:"source_count"`
+	SourceBytes int64                          `json:"source_bytes"`
+	Providers   []requestLogUsageProviderUsage `json:"providers"`
+	Keys        []requestLogUsageDayKey        `json:"keys"`
 }
 
 type requestLogUsageTotals struct {
@@ -156,6 +166,7 @@ type requestLogUsageAggregate struct {
 	batchCount   int
 	firstHour    time.Time
 	lastHour     time.Time
+	providers    map[string]requestLogUsageAuditModel
 	models       map[string]requestLogUsageAuditModel
 }
 
@@ -165,9 +176,11 @@ type requestLogUsagePending struct {
 }
 
 type requestLogUsageDayAggregate struct {
-	sourceCount int64
-	sourceBytes int64
-	keys        map[string]requestLogUsageAuditKey
+	sourceCount  int64
+	sourceBytes  int64
+	providers    map[string]requestLogUsageAuditModel
+	keys         map[string]requestLogUsageAuditKey
+	keyProviders map[string]map[string]requestLogUsageAuditModel
 }
 
 type requestLogUsageConfiguredKey struct {
@@ -652,8 +665,13 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 	totals := requestLogUsageTotals{BatchCount: len(hourKeys)}
 	for _, hourKey := range hourKeys {
 		batch := batches[hourKey]
+		provider := batch.provider
+		if provider == "" {
+			provider = "codex"
+		}
 		hour := requestLogUsageHour{
 			Hour:        batch.hour.Format(time.RFC3339),
+			Provider:    provider,
 			SourceCount: batch.sourceCount,
 			SourceBytes: batch.sourceBytes,
 			Keys:        make([]requestLogUsageHourKey, 0, len(batch.keyNames)),
@@ -663,11 +681,19 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		dayKey := batch.hour.In(location).Format(time.DateOnly)
 		dayAggregate := dailyAggregates[dayKey]
 		if dayAggregate == nil {
-			dayAggregate = &requestLogUsageDayAggregate{keys: make(map[string]requestLogUsageAuditKey)}
+			dayAggregate = &requestLogUsageDayAggregate{
+				providers:    make(map[string]requestLogUsageAuditModel),
+				keys:         make(map[string]requestLogUsageAuditKey),
+				keyProviders: make(map[string]map[string]requestLogUsageAuditModel),
+			}
 			dailyAggregates[dayKey] = dayAggregate
 		}
 		_ = safeRequestLogUsageAdd(&dayAggregate.sourceCount, batch.sourceCount)
 		_ = safeRequestLogUsageAdd(&dayAggregate.sourceBytes, batch.sourceBytes)
+		dayProvider := dayAggregate.providers[provider]
+		_ = safeRequestLogUsageAdd(&dayProvider.SourceCount, batch.sourceCount)
+		_ = safeRequestLogUsageAdd(&dayProvider.SourceBytes, batch.sourceBytes)
+		dayAggregate.providers[provider] = dayProvider
 
 		batchKeyNames := make([]string, 0, len(batch.keyNames))
 		for keyName := range batch.keyNames {
@@ -692,6 +718,10 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			if aggregate.lastHour.IsZero() || batch.hour.After(aggregate.lastHour) {
 				aggregate.lastHour = batch.hour
 			}
+			keyProvider := aggregate.providers[provider]
+			_ = safeRequestLogUsageAdd(&keyProvider.SourceCount, key.SourceCount)
+			_ = safeRequestLogUsageAdd(&keyProvider.SourceBytes, key.SourceBytes)
+			aggregate.providers[provider] = keyProvider
 			for modelName, model := range key.Models {
 				current := aggregate.models[modelName]
 				_ = safeRequestLogUsageAdd(&current.SourceCount, model.SourceCount)
@@ -712,6 +742,15 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				dailyKey.Models[modelName] = current
 			}
 			dayAggregate.keys[keyName] = dailyKey
+			dayKeyProviders := dayAggregate.keyProviders[keyName]
+			if dayKeyProviders == nil {
+				dayKeyProviders = make(map[string]requestLogUsageAuditModel)
+				dayAggregate.keyProviders[keyName] = dayKeyProviders
+			}
+			dayKeyProvider := dayKeyProviders[provider]
+			_ = safeRequestLogUsageAdd(&dayKeyProvider.SourceCount, key.SourceCount)
+			_ = safeRequestLogUsageAdd(&dayKeyProvider.SourceBytes, key.SourceBytes)
+			dayKeyProviders[provider] = dayKeyProvider
 		}
 		hours = append(hours, hour)
 	}
@@ -728,6 +767,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			Date:        dayKey,
 			SourceCount: aggregate.sourceCount,
 			SourceBytes: aggregate.sourceBytes,
+			Providers:   requestLogUsageProviderUsages(aggregate.providers),
 			Keys:        make([]requestLogUsageDayKey, 0, len(aggregate.keys)),
 		}
 		keyNames := make([]string, 0, len(aggregate.keys))
@@ -741,6 +781,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				KeyName:     keyName,
 				SourceCount: key.SourceCount,
 				SourceBytes: key.SourceBytes,
+				Providers:   requestLogUsageProviderUsages(aggregate.keyProviders[keyName]),
 				Models:      requestLogUsageModels(key.Models),
 			})
 		}
@@ -772,6 +813,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			PendingCount: aggregate.pendingCount,
 			PendingBytes: aggregate.pendingBytes,
 			BatchCount:   aggregate.batchCount,
+			Providers:    requestLogUsageProviderUsages(aggregate.providers),
 			Models:       requestLogUsageModels(aggregate.models),
 		}
 		if aggregate.displayName != "" {
@@ -854,10 +896,27 @@ func requestLogUsageConfiguredKeys(apiKeys, names []string) []requestLogUsageCon
 func ensureRequestLogUsageAggregate(aggregates map[string]*requestLogUsageAggregate, keyName string) *requestLogUsageAggregate {
 	aggregate := aggregates[keyName]
 	if aggregate == nil {
-		aggregate = &requestLogUsageAggregate{models: make(map[string]requestLogUsageAuditModel)}
+		aggregate = &requestLogUsageAggregate{
+			providers: make(map[string]requestLogUsageAuditModel),
+			models:    make(map[string]requestLogUsageAuditModel),
+		}
 		aggregates[keyName] = aggregate
 	}
 	return aggregate
+}
+
+func requestLogUsageProviderUsages(providers map[string]requestLogUsageAuditModel) []requestLogUsageProviderUsage {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]requestLogUsageProviderUsage, 0, len(names))
+	for _, name := range names {
+		usage := providers[name]
+		out = append(out, requestLogUsageProviderUsage{Provider: name, SourceCount: usage.SourceCount, SourceBytes: usage.SourceBytes})
+	}
+	return out
 }
 
 func requestLogUsageModels(models map[string]requestLogUsageAuditModel) []requestLogUsageModel {
