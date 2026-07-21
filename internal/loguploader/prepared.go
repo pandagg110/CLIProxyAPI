@@ -211,6 +211,7 @@ func (s *Service) completePreparedHour(ctx context.Context, hourKey string, prep
 func (s *Service) auditRecordForPrepared(prepared preparedHour) auditRecord {
 	record := auditRecord{
 		Timestamp:       s.now().In(s.location),
+		Provider:        prepared.Provider,
 		Hour:            prepared.Hour,
 		SourceCount:     len(prepared.Sources),
 		KeyNames:        make(map[string]auditKeyNameSummary),

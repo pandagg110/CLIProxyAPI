@@ -85,12 +85,13 @@ func (s *Service) MigrateLegacyState(ctx context.Context, manifestPath, archives
 			return fmt.Errorf("manifest object is outside configured prefix: %s", entry.ObjectKey)
 		}
 		hour := entry.Hour.In(s.location).Truncate(time.Hour)
-		hourKey := hourStateKey(hour)
+		hourKey := hourStateKey(hour, providerCodex)
 		if _, duplicate := seenHours[hourKey]; duplicate {
 			return fmt.Errorf("manifest contains more than one object for hour %s", hourKey)
 		}
 		seenHours[hourKey] = struct{}{}
-		if !strings.HasPrefix(filepath.Base(entry.ObjectKey), hourKey+"-"+legacyArchiveNameLabel+"-") || strings.Contains(filepath.Base(entry.ObjectKey), "-part") {
+		hourPrefix := hour.Format("2006-01-02-15")
+		if !strings.HasPrefix(filepath.Base(entry.ObjectKey), hourPrefix+"-"+legacyArchiveNameLabel+"-") || strings.Contains(filepath.Base(entry.ObjectKey), "-part") {
 			return fmt.Errorf("manifest object does not use the strict hourly name: %s", entry.ObjectKey)
 		}
 		auditRecord, existsAudit := audit[entry.ObjectKey]

@@ -91,6 +91,7 @@ type uploadedHour struct {
 type preparedHour struct {
 	TargetID        string           `json:"target_id"`
 	Hour            time.Time        `json:"hour"`
+	Provider        string           `json:"provider"`
 	ObjectKey       string           `json:"object_key"`
 	ArchivePath     string           `json:"archive_path"`
 	JSONLBytes      int64            `json:"jsonl_bytes"`
@@ -125,6 +126,7 @@ type auditModelSummary struct {
 type auditRecord struct {
 	Timestamp       time.Time                      `json:"timestamp"`
 	Status          string                         `json:"status"`
+	Provider        string                         `json:"provider,omitempty"`
 	Hour            time.Time                      `json:"hour"`
 	SourceCount     int                            `json:"source_count"`
 	SourceBytes     int64                          `json:"source_bytes"`
@@ -297,23 +299,26 @@ func (s *Service) runOnce(ctx context.Context, dryRun bool) error {
 	}
 
 	groups := groupSources(sources)
-	hours := make([]time.Time, 0, len(groups))
-	for hour := range groups {
-		hours = append(hours, hour)
+	groupKeys := make([]providerGroupKey, 0, len(groups))
+	for key := range groups {
+		groupKeys = append(groupKeys, key)
 	}
-	sort.Slice(hours, func(i, j int) bool {
-		return hours[i].Before(hours[j])
+	sort.Slice(groupKeys, func(i, j int) bool {
+		if !groupKeys[i].Hour.Equal(groupKeys[j].Hour) {
+			return groupKeys[i].Hour.Before(groupKeys[j].Hour)
+		}
+		return groupKeys[i].Provider < groupKeys[j].Provider
 	})
 
 	log.WithFields(log.Fields{
-		"source_files": len(sources),
-		"pending_hours": len(hours),
-		"first_hour":   hours[0].Format(time.RFC3339),
-		"last_hour":    hours[len(hours)-1].Format(time.RFC3339),
+		"source_files":  len(sources),
+		"pending_hours": len(groupKeys),
+		"first_hour":    groupKeys[0].Hour.Format(time.RFC3339),
+		"last_hour":     groupKeys[len(groupKeys)-1].Hour.Format(time.RFC3339),
 	}).Info("processing pending hours")
 
-	for _, hour := range hours {
-		if errProcess := s.processBatch(ctx, hour, groups[hour], state, dryRun); errProcess != nil {
+	for _, key := range groupKeys {
+		if errProcess := s.processBatch(ctx, key.Hour, key.Provider, groups[key], state, dryRun); errProcess != nil {
 			runErrors = append(runErrors, errProcess)
 		}
 	}
@@ -389,17 +394,24 @@ func (s *Service) scanSources(state uploadState) ([]sourceLog, error) {
 	return sources, nil
 }
 
-func groupSources(sources []sourceLog) map[time.Time][]sourceLog {
-	groups := make(map[time.Time][]sourceLog)
+type providerGroupKey struct {
+	Hour     time.Time
+	Provider string
+}
+
+func groupSources(sources []sourceLog) map[providerGroupKey][]sourceLog {
+	groups := make(map[providerGroupKey][]sourceLog)
 	for _, source := range sources {
-		groups[source.ArchiveHour] = append(groups[source.ArchiveHour], source)
+		key := providerGroupKey{Hour: source.ArchiveHour, Provider: source.Provider}
+		groups[key] = append(groups[key], source)
 	}
 	return groups
 }
 
-func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []sourceLog, state uploadState, dryRun bool) error {
+func (s *Service) processBatch(ctx context.Context, hour time.Time, provider string, sources []sourceLog, state uploadState, dryRun bool) error {
 	record := auditRecord{
 		Timestamp:   s.now().In(s.location),
+		Provider:    provider,
 		Hour:        hour,
 		SourceCount: len(sources),
 		KeyNames:    make(map[string]auditKeyNameSummary),
@@ -418,14 +430,14 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 		keySummary.Models[source.Model] = modelSummary
 		record.KeyNames[source.KeyName] = keySummary
 	}
-	if finalized, exists := state.Hours[hourStateKey(hour)]; exists && !dryRun {
+	if finalized, exists := state.Hours[hourStateKey(hour, provider)]; exists && !dryRun {
 		cause := fmt.Errorf("archive hour %s is already finalized as %s; retaining %d late source logs", hour.Format(time.RFC3339), finalized.ObjectKey, len(sources))
 		record.Status = "late_logs_retained"
 		record.ObjectKey = finalized.ObjectKey
 		record.Error = cause.Error()
 		return errors.Join(cause, s.appendAudit(record))
 	}
-	if prepared, exists := state.PreparedHours[hourStateKey(hour)]; exists && !dryRun {
+	if prepared, exists := state.PreparedHours[hourStateKey(hour, provider)]; exists && !dryRun {
 		cause := fmt.Errorf("archive hour %s already has prepared object %s; retaining newly discovered source logs", hour.Format(time.RFC3339), prepared.ObjectKey)
 		record.Status = "prepared_hour_blocked"
 		record.ObjectKey = prepared.ObjectKey
@@ -434,7 +446,7 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 	}
 
 	archiveStart := s.now()
-	archivePath, jsonlSize, compressedSize, errArchive := s.buildArchive(ctx, hour, sources, dryRun)
+	archivePath, jsonlSize, compressedSize, errArchive := s.buildArchive(ctx, hour, provider, sources, dryRun)
 	if errArchive != nil {
 		return s.recordBatchFailure(record, fmt.Errorf("build archive for hour %s: %w", hour.Format(time.RFC3339), errArchive))
 	}
@@ -483,6 +495,7 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 	prepared := preparedHour{
 		TargetID:        s.target.ID,
 		Hour:            hour,
+		Provider:        provider,
 		ObjectKey:       record.ObjectKey,
 		ArchivePath:     archivePath,
 		JSONLBytes:      jsonlSize,
@@ -506,7 +519,7 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, sources []so
 		})
 	}
 	prepared.ManifestSHA256 = manifestSHA256(prepared.Sources)
-	hourKey := hourStateKey(hour)
+	hourKey := hourStateKey(hour, provider)
 	state.PreparedHours[hourKey] = prepared
 	if errSave := s.saveState(state); errSave != nil {
 		delete(state.PreparedHours, hourKey)
@@ -521,7 +534,7 @@ func (s *Service) recordBatchFailure(record auditRecord, cause error) error {
 	return errors.Join(cause, s.appendAudit(record))
 }
 
-func (s *Service) buildArchive(ctx context.Context, hour time.Time, sources []sourceLog, dryRun bool) (string, int64, int64, error) {
+func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider string, sources []sourceLog, dryRun bool) (string, int64, int64, error) {
 	archiveRoot := "archives"
 	if dryRun {
 		archiveRoot = "dry-run-archives"
@@ -576,10 +589,10 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, sources []so
 		return "", 0, 0, fmt.Errorf("write Zstandard archive: %w", errCombined)
 	}
 
-	archiveFilename := makeArchiveFilename(hour, jsonlSize)
+	archiveFilename := makeArchiveFilename(hour, provider, jsonlSize)
 	archivePath := filepath.Join(archiveDir, archiveFilename)
 	if dryRun {
-		for _, label := range []string{archiveNameLabel, legacyArchiveNameLabel} {
+		for _, label := range []string{archiveNameLabel, claudeArchiveNameLabel, legacyArchiveNameLabel} {
 			stalePattern := filepath.Join(archiveDir, fmt.Sprintf("%s-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), label))
 			staleArchives, errGlob := filepath.Glob(stalePattern)
 			if errGlob != nil {
@@ -629,8 +642,8 @@ func (s *Service) objectKey(hour time.Time, filename string) string {
 	return strings.Join(clean, "/")
 }
 
-func hourStateKey(hour time.Time) string {
-	return hour.Format("2006-01-02-15")
+func hourStateKey(hour time.Time, provider string) string {
+	return hour.Format("2006-01-02-15") + ":" + provider
 }
 
 func (s *Service) statePath() string {

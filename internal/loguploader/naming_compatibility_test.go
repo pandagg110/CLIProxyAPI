@@ -132,7 +132,7 @@ func legacyAllModelsV2State(service *Service) (*uploadState, string, string) {
 	state := service.newUploadState()
 	state.Policy.Naming = legacyAllModelsPolicyNaming
 	hour := time.Date(2026, time.July, 15, 1, 0, 0, 0, service.location)
-	hourKey := hourStateKey(hour)
+	hourKey := hourStateKey(hour, providerCodex)
 	objectKey := "cliproxy-logs/2026/07/15/2026-07-15-01-all-models-1K.jsonl.zst"
 	archiveSHA := strings.Repeat("a", 64)
 	state.Objects[objectKey] = uploadedObject{
@@ -155,7 +155,7 @@ func legacyAllModelsV2State(service *Service) (*uploadState, string, string) {
 
 func assertLegacyNamingStateMigrated(t *testing.T, service *Service, state *uploadState, legacyObjectKey, hourKey string) {
 	t.Helper()
-	if state.Policy != service.policy || state.Policy.Naming != "codex56sol-jsonl-size-v1" {
+	if state.Policy != service.policy || state.Policy.Naming != "provider-jsonl-size-v2" {
 		t.Fatalf("migrated policy = %+v, want %+v", state.Policy, service.policy)
 	}
 	if !state.dirty {

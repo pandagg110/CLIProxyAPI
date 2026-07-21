@@ -60,9 +60,12 @@ func (s *Service) validateUploadState(state *uploadState) error {
 		return fmt.Errorf("upload state target mismatch: state target %s does not match configured target %s", state.Target.ID, s.target.ID)
 	}
 	if state.Policy != s.policy {
-		legacyPolicy := s.policy
-		legacyPolicy.Naming = legacyArchiveNamingPolicy
-		if s.policy.Naming != archiveNamingPolicy || state.Policy != legacyPolicy {
+		// Migration path: all-models-jsonl-size-v1 -> codex56sol-jsonl-size-v1 -> provider-jsonl-size-v2
+		legacyV1 := s.policy
+		legacyV1.Naming = legacyAllModelsNamingPolicy
+		legacyV2 := s.policy
+		legacyV2.Naming = legacyArchiveNamingPolicy
+		if state.Policy != legacyV1 && state.Policy != legacyV2 {
 			return fmt.Errorf("upload state policy mismatch: state policy %+v does not match configured policy %+v", state.Policy, s.policy)
 		}
 		state.Policy = s.policy
@@ -83,6 +86,34 @@ func (s *Service) validateUploadState(state *uploadState) error {
 	if state.PreparedHours == nil {
 		state.PreparedHours = make(map[string]preparedHour)
 		state.dirty = true
+	}
+
+	// Migrate legacy hour keys (without provider suffix) to the new format.
+	for hourKey, hour := range state.Hours {
+		if !strings.Contains(hourKey, ":") {
+			newKey := hourKey + ":" + providerCodex
+			state.Hours[newKey] = hour
+			delete(state.Hours, hourKey)
+			state.dirty = true
+		}
+	}
+	for hourKey, prepared := range state.PreparedHours {
+		if !strings.Contains(hourKey, ":") {
+			newKey := hourKey + ":" + providerCodex
+			if prepared.Provider == "" {
+				prepared.Provider = providerCodex
+			}
+			state.PreparedHours[newKey] = prepared
+			delete(state.PreparedHours, hourKey)
+			state.dirty = true
+		}
+	}
+	for fingerprint, source := range state.Uploaded {
+		if source.HourKey != "" && !strings.Contains(source.HourKey, ":") {
+			source.HourKey = source.HourKey + ":" + providerCodex
+			state.Uploaded[fingerprint] = source
+			state.dirty = true
+		}
 	}
 
 	objectHours := make(map[string]string, len(state.Hours))
@@ -159,7 +190,7 @@ func (s *Service) validateUploadState(state *uploadState) error {
 		if prepared.TargetID != s.target.ID || prepared.ObjectKey == "" || !isSHA256(prepared.ArchiveSHA256) || len(prepared.Sources) == 0 {
 			return fmt.Errorf("prepared hour %s is missing trusted batch metadata", hourKey)
 		}
-		if prepared.Hour.IsZero() || hourStateKey(prepared.Hour.In(s.location)) != hourKey {
+		if prepared.Hour.IsZero() || hourStateKey(prepared.Hour.In(s.location), prepared.Provider) != hourKey {
 			return fmt.Errorf("prepared hour %s does not match its state key", hourKey)
 		}
 		if _, sealed := state.Hours[hourKey]; sealed {
@@ -196,8 +227,22 @@ func (s *Service) validateUploadState(state *uploadState) error {
 }
 
 func (s *Service) validateHourStateKey(hourKey string) error {
+	// New format: "2006-01-02-15:provider"
+	if idx := strings.LastIndex(hourKey, ":"); idx > 0 {
+		hourPart := hourKey[:idx]
+		providerPart := hourKey[idx+1:]
+		if providerPart != providerCodex && providerPart != providerClaude {
+			return fmt.Errorf("invalid provider in hour key %q", hourKey)
+		}
+		hour, errParse := time.ParseInLocation("2006-01-02-15", hourPart, s.location)
+		if errParse != nil || hourStateKey(hour, providerPart) != hourKey {
+			return fmt.Errorf("invalid upload state hour key %q", hourKey)
+		}
+		return nil
+	}
+	// Legacy format: "2006-01-02-15" (treated as codex)
 	hour, errParse := time.ParseInLocation("2006-01-02-15", hourKey, s.location)
-	if errParse != nil || hourStateKey(hour) != hourKey {
+	if errParse != nil || hour.Format("2006-01-02-15") != hourKey {
 		return fmt.Errorf("invalid upload state hour key %q", hourKey)
 	}
 	return nil

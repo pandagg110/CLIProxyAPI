@@ -153,11 +153,14 @@ func TestArchiveFilenameAndHumanSize(t *testing.T) {
 
 	location := mustLocation(t, "Asia/Shanghai")
 	hour := time.Date(2026, time.July, 15, 1, 0, 0, 0, location)
-	if got, want := makeArchiveFilename(hour, 2<<30), "2026-07-15-01-codex56sol-2G.jsonl.zst"; got != want {
+	if got, want := makeArchiveFilename(hour, providerCodex, 2<<30), "2026-07-15-01-codex56sol-2G.jsonl.zst"; got != want {
 		t.Errorf("archive filename = %q, want %q", got, want)
 	}
-	if got, want := makeArchiveFilename(hour, 1536), "2026-07-15-01-codex56sol-1.5K.jsonl.zst"; got != want {
+	if got, want := makeArchiveFilename(hour, providerCodex, 1536), "2026-07-15-01-codex56sol-1.5K.jsonl.zst"; got != want {
 		t.Errorf("archive filename = %q, want %q", got, want)
+	}
+	if got, want := makeArchiveFilename(hour, providerClaude, 2<<30), "2026-07-15-01-fable5-2G.jsonl.zst"; got != want {
+		t.Errorf("claude archive filename = %q, want %q", got, want)
 	}
 
 	tests := []struct {
@@ -267,4 +270,28 @@ func mustWriteLog(t *testing.T, root, keyName, filename, contents string, modTim
 		t.Fatalf("set source modtime: %v", errTimes)
 	}
 	return path
+}
+
+func TestClassifyProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{"claude-sonnet-4-20250514", providerClaude},
+		{"claude-opus-4-20250514", providerClaude},
+		{"Claude-Sonnet-4-20250514", providerClaude},
+		{"claude-fable-5-dd-o4-tpg", providerCodex},
+		{"claude-fable-5-dd-inimig-4o-tpg", providerCodex},
+		{"gpt-4o", providerCodex},
+		{"o3", providerCodex},
+		{"unknown", providerCodex},
+		{"", providerCodex},
+	}
+	for _, test := range tests {
+		if got := classifyProvider(test.model); got != test.want {
+			t.Errorf("classifyProvider(%q) = %q, want %q", test.model, got, test.want)
+		}
+	}
 }

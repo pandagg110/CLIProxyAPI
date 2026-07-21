@@ -18,11 +18,17 @@ import (
 )
 
 const (
-	metadataReadLimit         = 1 << 20
+	metadataReadLimit = 1 << 20
+
+	providerCodex  = "codex"
+	providerClaude = "fable5"
+
 	archiveNameLabel          = "codex56sol"
-	archiveNamingPolicy       = "codex56sol-jsonl-size-v1"
+	claudeArchiveNameLabel    = "fable5"
+	archiveNamingPolicy       = "provider-jsonl-size-v2"
+	legacyArchiveNamingPolicy = "codex56sol-jsonl-size-v1"
 	legacyArchiveNameLabel    = "all-models"
-	legacyArchiveNamingPolicy = "all-models-jsonl-size-v1"
+	legacyAllModelsNamingPolicy = "all-models-jsonl-size-v1"
 )
 
 var (
@@ -36,6 +42,7 @@ type sourceLog struct {
 	Relative    string
 	KeyName     string
 	Model       string
+	Provider    string
 	Timestamp   time.Time
 	ArchiveHour time.Time
 	Size        int64
@@ -87,6 +94,7 @@ func inspectSourceLog(root, path string, info os.FileInfo, location *time.Locati
 		Relative:    filepath.ToSlash(relative),
 		KeyName:     parts[0],
 		Model:       model,
+		Provider:    classifyProvider(model),
 		Timestamp:   timestamp,
 		ArchiveHour: archiveHour,
 		Size:        info.Size(),
@@ -413,8 +421,23 @@ func sanitizeName(value, fallback string) string {
 	return strings.ToLower(builder.String())
 }
 
-func makeArchiveFilename(hour time.Time, size int64) string {
-	return fmt.Sprintf("%s-%s-%s.jsonl.zst", hour.Format("2006-01-02-15"), archiveNameLabel, humanSize(size))
+func classifyProvider(model string) string {
+	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "claude-") && !strings.HasPrefix(lower, "claude-fable-5-dd-") {
+		return providerClaude
+	}
+	return providerCodex
+}
+
+func archiveNameLabelForProvider(provider string) string {
+	if provider == providerClaude {
+		return claudeArchiveNameLabel
+	}
+	return archiveNameLabel
+}
+
+func makeArchiveFilename(hour time.Time, provider string, size int64) string {
+	return fmt.Sprintf("%s-%s-%s.jsonl.zst", hour.Format("2006-01-02-15"), archiveNameLabelForProvider(provider), humanSize(size))
 }
 
 func humanSize(size int64) string {

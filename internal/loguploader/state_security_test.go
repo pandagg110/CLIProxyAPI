@@ -289,10 +289,10 @@ func validSecurityUploadState(service *Service) *uploadState {
 		UploadedAt:     uploadedHour.Add(time.Hour),
 		VerifiedAt:     uploadedHour.Add(time.Hour),
 	}
-	state.Hours[hourStateKey(uploadedHour)] = uploadedHourState(uploadedObjectKey, uploadedArchiveSHA, uploadedHour.Add(time.Hour))
+	state.Hours[hourStateKey(uploadedHour, providerCodex)] = uploadedHourState(uploadedObjectKey, uploadedArchiveSHA, uploadedHour.Add(time.Hour))
 	state.Uploaded[uploadedFingerprint] = uploadedSource{
 		ObjectKey:    uploadedObjectKey,
-		HourKey:      hourStateKey(uploadedHour),
+		HourKey:      hourStateKey(uploadedHour, providerCodex),
 		TargetID:     service.target.ID,
 		UploadedAt:   uploadedHour.Add(time.Hour),
 		RelativePath: uploadedRelativePath,
@@ -309,6 +309,7 @@ func validSecurityUploadState(service *Service) *uploadState {
 	prepared := preparedHour{
 		TargetID:        service.target.ID,
 		Hour:            preparedTime,
+		Provider:        providerCodex,
 		ObjectKey:       preparedObjectKey,
 		ArchivePath:     filepath.Join(service.cfg.WorkDir, "archives", "2026", "07", "15", filepath.Base(preparedObjectKey)),
 		JSONLBytes:      1024,
@@ -326,7 +327,7 @@ func validSecurityUploadState(service *Service) *uploadState {
 		}},
 	}
 	prepared.ManifestSHA256 = manifestSHA256(prepared.Sources)
-	state.PreparedHours[hourStateKey(preparedTime)] = prepared
+	state.PreparedHours[hourStateKey(preparedTime, providerCodex)] = prepared
 	return &state
 }
 

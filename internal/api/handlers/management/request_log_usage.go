@@ -58,11 +58,13 @@ type requestLogUsageAuditKey struct {
 type requestLogUsageAuditRecord struct {
 	Status   string                             `json:"status"`
 	Hour     time.Time                          `json:"hour"`
+	Provider string                             `json:"provider"`
 	KeyNames map[string]requestLogUsageAuditKey `json:"key_names"`
 }
 
 type requestLogUsageBatch struct {
 	hour        time.Time
+	provider    string
 	statusRank  int
 	sourceCount int64
 	sourceBytes int64
@@ -126,14 +128,22 @@ type requestLogUsageTotals struct {
 	KeyCount     int   `json:"key_count"`
 }
 
+type requestLogUsageProviderSummary struct {
+	Provider    string `json:"provider"`
+	SourceCount int64  `json:"source_count"`
+	SourceBytes int64  `json:"source_bytes"`
+	BatchCount  int    `json:"batch_count"`
+}
+
 type requestLogUsageResponse struct {
-	Timezone           string                `json:"timezone"`
-	SourceBytesMeaning string                `json:"source_bytes_meaning"`
-	Totals             requestLogUsageTotals `json:"totals"`
-	Keys               []requestLogUsageKey  `json:"keys"`
-	Days               []requestLogUsageDay  `json:"days"`
-	Hours              []requestLogUsageHour `json:"hours"`
-	ParseErrors        []string              `json:"parse_errors"`
+	Timezone           string                           `json:"timezone"`
+	SourceBytesMeaning string                           `json:"source_bytes_meaning"`
+	Totals             requestLogUsageTotals            `json:"totals"`
+	Providers          []requestLogUsageProviderSummary `json:"providers"`
+	Keys               []requestLogUsageKey             `json:"keys"`
+	Days               []requestLogUsageDay             `json:"days"`
+	Hours              []requestLogUsageHour            `json:"hours"`
+	ParseErrors        []string                         `json:"parse_errors"`
 }
 
 type requestLogUsageAggregate struct {
@@ -451,7 +461,7 @@ func readRequestLogUsageAudit(path, label string, location *time.Location, batch
 		if !include {
 			continue
 		}
-		hourKey := batch.hour.Format(time.RFC3339)
+		hourKey := batch.hour.Format(time.RFC3339) + ":" + batch.provider
 		previous, exists := batches[hourKey]
 		if !exists {
 			batches[hourKey] = batch
@@ -509,8 +519,13 @@ func normalizeRequestLogUsageBatch(record requestLogUsageAuditRecord, location *
 
 	localHour := record.Hour.In(location)
 	localHour = time.Date(localHour.Year(), localHour.Month(), localHour.Day(), localHour.Hour(), 0, 0, 0, location)
+	provider := strings.TrimSpace(record.Provider)
+	if provider == "" {
+		provider = "codex"
+	}
 	batch := requestLogUsageBatch{
 		hour:       localHour,
+		provider:   provider,
 		statusRank: statusRank,
 		keyNames:   make(map[string]requestLogUsageAuditKey),
 	}
@@ -769,6 +784,34 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		keys = append(keys, key)
 	}
 	totals.KeyCount = len(keys)
+
+	// Aggregate per-provider statistics.
+	providerAggregates := make(map[string]*requestLogUsageProviderSummary)
+	for _, hourKey := range hourKeys {
+		batch := batches[hourKey]
+		provider := batch.provider
+		if provider == "" {
+			provider = "codex"
+		}
+		summary := providerAggregates[provider]
+		if summary == nil {
+			summary = &requestLogUsageProviderSummary{Provider: provider}
+			providerAggregates[provider] = summary
+		}
+		_ = safeRequestLogUsageAdd(&summary.SourceCount, batch.sourceCount)
+		_ = safeRequestLogUsageAdd(&summary.SourceBytes, batch.sourceBytes)
+		summary.BatchCount++
+	}
+	providerNames := make([]string, 0, len(providerAggregates))
+	for name := range providerAggregates {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+	providers := make([]requestLogUsageProviderSummary, 0, len(providerNames))
+	for _, name := range providerNames {
+		providers = append(providers, *providerAggregates[name])
+	}
+
 	if parseErrors == nil {
 		parseErrors = make([]string, 0)
 	}
@@ -776,6 +819,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		Timezone:           settings.timezone,
 		SourceBytesMeaning: "complete raw .log file bytes before JSONL conversion and compression",
 		Totals:             totals,
+		Providers:          providers,
 		Keys:               keys,
 		Days:               days,
 		Hours:              hours,
