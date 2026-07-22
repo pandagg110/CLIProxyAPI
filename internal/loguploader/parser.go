@@ -424,7 +424,11 @@ func sanitizeName(value, fallback string) string {
 }
 
 func classifyProvider(model string) string {
-	lower := strings.ToLower(model)
+	lower := strings.ToLower(strings.TrimSpace(model))
+	// Clients may send vendor-prefixed names such as "xai/grok-4.5".
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 && idx+1 < len(lower) {
+		lower = lower[idx+1:]
+	}
 	if strings.HasPrefix(lower, "claude-") && !strings.HasPrefix(lower, "claude-fable-5-dd-") {
 		return providerClaude
 	}

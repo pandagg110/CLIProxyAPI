@@ -292,8 +292,10 @@
       '.cpa-rlu-daily-table{min-width:max(680px,100%)}.cpa-rlu-daily-value{display:block;font-weight:700;font-variant-numeric:tabular-nums}.cpa-rlu-daily-count{display:block;margin-top:2px;color:var(--text-secondary,#64748b);font-size:10px}',
       '.cpa-rlu-daily-provider{display:block;margin-top:2px;color:var(--text-secondary,#64748b);font-size:10px;font-variant-numeric:tabular-nums}',
       '.cpa-rlu-daily-provider[data-provider="fable5"]{color:var(--primary-color,#2563eb);font-weight:650}',
+      '.cpa-rlu-daily-provider[data-provider="grok45"]{color:#0f766e;font-weight:650}',
       '.cpa-rlu-provider{border:1px solid var(--border-color,#d8dee9);border-radius:999px;padding:3px 8px;background:var(--bg-primary,#fff);color:var(--text-secondary,#64748b);font-size:11px}',
       '.cpa-rlu-provider[data-provider="fable5"]{border-color:color-mix(in srgb,var(--primary-color,#2563eb) 45%,var(--border-color,#d8dee9));color:var(--primary-color,#2563eb);font-weight:650}',
+      '.cpa-rlu-provider[data-provider="grok45"]{border-color:color-mix(in srgb,#0f766e 45%,var(--border-color,#d8dee9));color:#0f766e;font-weight:650}',
       '.cpa-rlu-empty{padding:34px 16px;text-align:center;color:var(--text-secondary,#64748b);font-size:14px}',
       '.cpa-rlu-footer{margin-top:13px;color:var(--text-secondary,#64748b);font-size:11px;line-height:1.5}',
       '@media(prefers-color-scheme:dark){.cpa-rlu-panel{background:var(--bg-primary,#15181e);color:var(--text-primary,#eef2f7);border-color:var(--border-color,#343a46)}.cpa-rlu-summary-card,.cpa-rlu-key-card,.cpa-rlu-daily,.cpa-rlu-button,.cpa-rlu-close{background:var(--bg-secondary,#20242d);border-color:var(--border-color,#343a46)}.cpa-rlu-metric,.cpa-rlu-table-wrap,.cpa-rlu-badge,.cpa-rlu-model{background:var(--bg-primary,#15181e);border-color:var(--border-color,#343a46)}.cpa-rlu-status[data-kind="error"]{color:#fca5a5}.cpa-rlu-status[data-kind="warning"]{color:#fcd34d}}',
@@ -484,6 +486,9 @@
     }
     if (normalized === 'codex') {
       return 'GPT';
+    }
+    if (normalized === 'grok45') {
+      return 'Grok';
     }
     return String(name || 'unknown');
   }

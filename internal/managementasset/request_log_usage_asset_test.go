@@ -38,6 +38,8 @@ func TestRequestLogUsageScriptReturnsCopy(t *testing.T) {
 		[]byte("'unauthorized'"),
 		[]byte("'hashchange'"),
 		[]byte("cache: 'no-store'"),
+		[]byte("grok45"),
+		[]byte("return 'Grok'"),
 	} {
 		if !bytes.Contains(second, required) {
 			t.Fatalf("request log usage script is missing %q", required)

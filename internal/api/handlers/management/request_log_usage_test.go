@@ -235,6 +235,78 @@ func TestGetRequestLogUsageSeparatesClaudeAndCodexProviders(t *testing.T) {
 	}
 }
 
+func TestGetRequestLogUsageSeparatesGrokProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	mustWriteRequestLogUsageFile(t, filepath.Join(root, "log-uploader.yaml"), []byte("logs-root: logs/keys\nwork-dir: work\ntimezone: Asia/Shanghai\n"))
+
+	hour := time.Date(2026, 7, 22, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	lines := []string{
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:   "uploaded",
+			Hour:     hour,
+			Provider: "codex",
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(2, 100, "gpt-5.6", 2, 100),
+			},
+		}),
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:   "uploaded",
+			Hour:     hour,
+			Provider: "grok45",
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(5, 500, "grok-4.5", 5, 500),
+			},
+		}),
+	}
+	mustWriteRequestLogUsageFile(t, filepath.Join(workDir, "audit.jsonl"), []byte(strings.Join(lines, "\n")+"\n"))
+
+	handler := NewHandler(&config.Config{AuthDir: filepath.Join(root, "auths")}, filepath.Join(root, "config.yaml"), nil)
+	response, _ := performRequestLogUsage(t, handler)
+
+	if response.Totals.SourceCount != 7 || response.Totals.SourceBytes != 600 || response.Totals.BatchCount != 2 {
+		t.Fatalf("totals = %+v", response.Totals)
+	}
+	if len(response.Providers) != 2 {
+		t.Fatalf("providers = %+v", response.Providers)
+	}
+	if response.Providers[0].Provider != "codex" || response.Providers[0].SourceCount != 2 || response.Providers[0].SourceBytes != 100 {
+		t.Fatalf("codex provider summary = %+v", response.Providers[0])
+	}
+	if response.Providers[1].Provider != "grok45" || response.Providers[1].SourceCount != 5 || response.Providers[1].SourceBytes != 500 {
+		t.Fatalf("grok provider summary = %+v", response.Providers[1])
+	}
+
+	if len(response.Hours) != 2 {
+		t.Fatalf("hours = %+v", response.Hours)
+	}
+	if response.Hours[0].Provider != "codex" || response.Hours[1].Provider != "grok45" {
+		t.Fatalf("hour providers = %q, %q", response.Hours[0].Provider, response.Hours[1].Provider)
+	}
+
+	alice := requestLogUsageKeyByName(t, response.Keys, "alice")
+	if len(alice.Providers) != 2 || alice.Providers[0].Provider != "codex" || alice.Providers[1].Provider != "grok45" {
+		t.Fatalf("alice key providers = %+v", alice.Providers)
+	}
+	if alice.Providers[1].SourceCount != 5 || alice.Providers[1].SourceBytes != 500 {
+		t.Fatalf("alice grok provider totals = %+v", alice.Providers[1])
+	}
+	if len(alice.Models) == 0 {
+		t.Fatalf("alice models empty")
+	}
+	foundGrokModel := false
+	for _, model := range alice.Models {
+		if model.Model == "grok-4.5" && model.SourceCount == 5 && model.SourceBytes == 500 {
+			foundGrokModel = true
+			break
+		}
+	}
+	if !foundGrokModel {
+		t.Fatalf("alice models missing grok-4.5: %+v", alice.Models)
+	}
+}
+
 func TestBuildRequestLogUsageResponseGroupsDaysInConfiguredTimezone(t *testing.T) {
 	location, errLocation := time.LoadLocation("Asia/Shanghai")
 	if errLocation != nil {
