@@ -162,6 +162,9 @@ func TestArchiveFilenameAndHumanSize(t *testing.T) {
 	if got, want := makeArchiveFilename(hour, providerClaude, 2<<30), "2026-07-15-01-fable5-2G.jsonl.zst"; got != want {
 		t.Errorf("claude archive filename = %q, want %q", got, want)
 	}
+	if got, want := makeArchiveFilename(hour, providerGrok, 2<<30), "2026-07-15-01-grok45-2G.jsonl.zst"; got != want {
+		t.Errorf("grok archive filename = %q, want %q", got, want)
+	}
 
 	tests := []struct {
 		size int64
@@ -284,6 +287,9 @@ func TestClassifyProvider(t *testing.T) {
 		{"Claude-Sonnet-4-20250514", providerClaude},
 		{"claude-fable-5-dd-o4-tpg", providerCodex},
 		{"claude-fable-5-dd-inimig-4o-tpg", providerCodex},
+		{"grok-4.5", providerGrok},
+		{"grok-4.5-mini", providerGrok},
+		{"Grok-4.5", providerGrok},
 		{"gpt-4o", providerCodex},
 		{"o3", providerCodex},
 		{"unknown", providerCodex},

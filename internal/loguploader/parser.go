@@ -22,9 +22,11 @@ const (
 
 	providerCodex  = "codex"
 	providerClaude = "fable5"
+	providerGrok   = "grok45"
 
 	archiveNameLabel          = "codex56sol"
 	claudeArchiveNameLabel    = "fable5"
+	grokArchiveNameLabel      = "grok45"
 	archiveNamingPolicy       = "provider-jsonl-size-v2"
 	legacyArchiveNamingPolicy = "codex56sol-jsonl-size-v1"
 	legacyArchiveNameLabel    = "all-models"
@@ -426,14 +428,21 @@ func classifyProvider(model string) string {
 	if strings.HasPrefix(lower, "claude-") && !strings.HasPrefix(lower, "claude-fable-5-dd-") {
 		return providerClaude
 	}
+	if strings.HasPrefix(lower, "grok-") {
+		return providerGrok
+	}
 	return providerCodex
 }
 
 func archiveNameLabelForProvider(provider string) string {
-	if provider == providerClaude {
+	switch provider {
+	case providerClaude:
 		return claudeArchiveNameLabel
+	case providerGrok:
+		return grokArchiveNameLabel
+	default:
+		return archiveNameLabel
 	}
-	return archiveNameLabel
 }
 
 func makeArchiveFilename(hour time.Time, provider string, size int64) string {

@@ -231,7 +231,7 @@ func (s *Service) validateHourStateKey(hourKey string) error {
 	if idx := strings.LastIndex(hourKey, ":"); idx > 0 {
 		hourPart := hourKey[:idx]
 		providerPart := hourKey[idx+1:]
-		if providerPart != providerCodex && providerPart != providerClaude {
+		if providerPart != providerCodex && providerPart != providerClaude && providerPart != providerGrok {
 			return fmt.Errorf("invalid provider in hour key %q", hourKey)
 		}
 		hour, errParse := time.ParseInLocation("2006-01-02-15", hourPart, s.location)

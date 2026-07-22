@@ -592,7 +592,7 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 	archiveFilename := makeArchiveFilename(hour, provider, jsonlSize)
 	archivePath := filepath.Join(archiveDir, archiveFilename)
 	if dryRun {
-		for _, label := range []string{archiveNameLabel, claudeArchiveNameLabel, legacyArchiveNameLabel} {
+		for _, label := range []string{archiveNameLabel, claudeArchiveNameLabel, grokArchiveNameLabel, legacyArchiveNameLabel} {
 			stalePattern := filepath.Join(archiveDir, fmt.Sprintf("%s-%s-*.jsonl.zst", hour.Format("2006-01-02-15"), label))
 			staleArchives, errGlob := filepath.Glob(stalePattern)
 			if errGlob != nil {
