@@ -6,6 +6,7 @@
   var STATUS_ENDPOINT = '/v0/management/log-qa/status';
   var SUMMARY_ENDPOINT = '/v0/management/log-qa/summary';
   var SESSIONS_ENDPOINT = '/v0/management/log-qa/sessions';
+  var RUNS_ENDPOINT = '/v0/management/log-qa/runs';
   var RUN_ENDPOINT = '/v0/management/log-qa/run';
   var SESSION_LOGS_ENDPOINT = '/v0/management/log-qa/sessions/logs';
   var AUTHORIZATION = 'authorization';
@@ -230,6 +231,8 @@
       '.cpa-lqa-table th{color:var(--text-secondary,#64748b);font-weight:650}',
       '.cpa-lqa-fail{color:#b91c1c}.cpa-lqa-pass{color:#047857}',
       '.cpa-lqa-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}',
+      '.cpa-lqa-title-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default}',
+      '.cpa-lqa-time{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--text-secondary,#64748b)}',
     ].join('');
     document.head.appendChild(style);
   }
@@ -307,6 +310,9 @@
       reasonFilter: '',
       query: '',
       runId: '',
+      // Empty = always follow latest; set when user picks a historical batch.
+      selectedRunId: '',
+      availableRuns: [],
     };
     setRunControls(false);
     return ui;
@@ -441,6 +447,8 @@
       return;
     }
     setRunControls(true);
+    // New run becomes latest; clear pin so the panel follows the new report.
+    ui.selectedRunId = '';
     ui.status.textContent = '正在启动质检…';
     ui.status.dataset.kind = 'running';
     authedFetch(RUN_ENDPOINT, { method: 'POST' })
@@ -551,6 +559,47 @@
       .join('，');
   }
 
+  // Format an RFC3339 timestamp as Asia/Shanghai wall clock for the table.
+  function formatSessionTime(value) {
+    if (!value) {
+      return '-';
+    }
+    var d = new Date(value);
+    if (isNaN(d.getTime())) {
+      return String(value);
+    }
+    // Convert to Beijing by shifting UTC then reading UTC fields.
+    var bj = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+    function pad(n) {
+      return n < 10 ? '0' + n : String(n);
+    }
+    return (
+      bj.getUTCFullYear() +
+      '-' +
+      pad(bj.getUTCMonth() + 1) +
+      '-' +
+      pad(bj.getUTCDate()) +
+      ' ' +
+      pad(bj.getUTCHours()) +
+      ':' +
+      pad(bj.getUTCMinutes()) +
+      ':' +
+      pad(bj.getUTCSeconds())
+    );
+  }
+
+  function sessionTimeTooltip(row) {
+    var first = formatSessionTime(row && row.first_ts);
+    var last = formatSessionTime(row && row.last_ts);
+    if (first === '-' && last === '-') {
+      return '';
+    }
+    if (first === last || last === '-') {
+      return '开始：' + first + '（北京时间）';
+    }
+    return '开始：' + first + '（北京时间）\n最近活动：' + last + '（北京时间）';
+  }
+
   // Display run batch in Asia/Shanghai (北京时间). Accepts both legacy UTC ids
   // (…Z) and new offset ids (…+0800 / …-0700 layout).
   function formatRunBatch(runId) {
@@ -607,19 +656,35 @@
     );
   }
 
-  function render(summaryPayload, sessionsPayload) {
+  function render(summaryPayload, sessionsPayload, runsPayload) {
     ui.content.replaceChildren();
     ui.content.appendChild(
       element(
         'p',
         'cpa-lqa-note',
         '仅检查本地尚未上传的 .log 文件。已上传或已删除的日志不会纳入。质检不会拦截或修改上传服务。' +
-          '判定标准：有效提问轮次默认需 ≥ 4（非「不足 8 轮」）；下方数字是失败会话个数，不是轮次阈值。'
+          '判定标准：有效提问轮次默认需 ≥ 4（非「不足 8 轮」）；下方数字是失败会话个数，不是轮次阈值。' +
+          '历史批次保存在 work-dir/reports（默认最多 48 轮），可用下方「历史批次」切换查看。'
       )
     );
 
+    var runs = (runsPayload && runsPayload.runs) || ui.availableRuns || [];
+    ui.availableRuns = runs;
+
     if (!summaryPayload || !summaryPayload.has_report || !summaryPayload.summary) {
-      renderEmpty((summaryPayload && summaryPayload.message) || '尚无质检报告。');
+      // Still show run picker if historical reports exist but selected one is missing.
+      if (runs.length) {
+        var emptyFilters = element('div', 'cpa-lqa-filters');
+        emptyFilters.appendChild(buildRunFilterRow(runs, null));
+        ui.content.appendChild(emptyFilters);
+      }
+      ui.content.appendChild(
+        element(
+          'p',
+          'cpa-lqa-note',
+          (summaryPayload && summaryPayload.message) || '尚无质检报告。'
+        )
+      );
       return;
     }
 
@@ -650,12 +715,15 @@
           (hist.no_tool_call || 0) +
           ' 个，助手回复重复：' +
           (hist.duplicate_assistant || 0) +
-          ' 个 | 运行批次：' +
-          formatRunBatch(s.run_id)
+          ' 个 | 当前查看批次：' +
+          formatRunBatch(s.run_id) +
+          (runs.length ? '（共 ' + runs.length + ' 个历史批次）' : '')
       )
     );
 
     var filters = element('div', 'cpa-lqa-filters');
+    filters.appendChild(buildRunFilterRow(runs, s.run_id));
+
     var statusSelect = document.createElement('select');
     ;[
       ['fail', '失败'],
@@ -709,7 +777,7 @@
     var table = element('table', 'cpa-lqa-table');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
-    ;['状态', '会话 ID', '标题', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key', '操作'].forEach(function (h) {
+    ;['状态', '会话 ID', '标题', '开始时间', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key', '操作'].forEach(function (h) {
       headRow.appendChild(element('th', '', h));
     });
     thead.appendChild(headRow);
@@ -719,7 +787,7 @@
     if (!sessions.length) {
       var emptyRow = document.createElement('tr');
       var td = element('td', '', '当前筛选条件下无会话');
-      td.colSpan = 9;
+      td.colSpan = 10;
       emptyRow.appendChild(td);
       tbody.appendChild(emptyRow);
     }
@@ -727,19 +795,30 @@
       var tr = document.createElement('tr');
       tr.appendChild(element('td', row.ok ? 'cpa-lqa-pass' : 'cpa-lqa-fail', row.ok ? '通过' : '失败'));
       tr.appendChild(element('td', 'cpa-lqa-mono', row.session_id || ''));
-      var titleCell = element('td', '', row.title || '-');
-      if (row.title_source === 'user_prompt') {
-        titleCell.title = '未找到 Codex 标题生成结果，回退为首条有效用户提问';
-      } else if (row.title_source === 'codex_title') {
-        titleCell.title = '来自 Codex 会话标题生成请求';
-      }
+
+      var titleText = row.title || '-';
+      var titleCell = element('td', 'cpa-lqa-title-cell', titleText);
+      var titleTips = [];
       if (row.title) {
-        titleCell.style.maxWidth = '220px';
-        titleCell.style.overflow = 'hidden';
-        titleCell.style.textOverflow = 'ellipsis';
-        titleCell.style.whiteSpace = 'nowrap';
+        titleTips.push(row.title);
+      }
+      if (row.title_source === 'user_prompt') {
+        titleTips.push('来源：首条有效用户提问（未找到 Codex 标题生成结果）');
+      } else if (row.title_source === 'codex_title') {
+        titleTips.push('来源：Codex 会话标题生成请求');
+      }
+      if (titleTips.length) {
+        titleCell.title = titleTips.join('\n\n');
       }
       tr.appendChild(titleCell);
+
+      var timeCell = element('td', 'cpa-lqa-time', formatSessionTime(row.first_ts));
+      var timeTip = sessionTimeTooltip(row);
+      if (timeTip) {
+        timeCell.title = timeTip;
+      }
+      tr.appendChild(timeCell);
+
       tr.appendChild(element('td', '', String(row.prompt_rounds)));
       tr.appendChild(element('td', '', String(row.tool_calls)));
       tr.appendChild(element('td', '', String(row.dup_assistant_groups)));
@@ -773,6 +852,54 @@
     }
   }
 
+  function buildRunFilterRow(runs, currentRunId) {
+    var wrap = document.createElement('span');
+    wrap.style.display = 'inline-flex';
+    wrap.style.alignItems = 'center';
+    wrap.style.gap = '6px';
+
+    var label = element('span', '', '历史批次');
+    label.style.fontSize = '12px';
+    label.style.color = 'var(--text-secondary,#64748b)';
+
+    var runSelect = document.createElement('select');
+    runSelect.title = '切换查看历史质检报告（磁盘 work-dir/reports，默认最多保留 48 轮）';
+
+    var latestOpt = document.createElement('option');
+    latestOpt.value = '';
+    latestOpt.textContent = runs.length
+      ? '最新（' + formatRunBatch((runs[0] && runs[0].run_id) || currentRunId || '') + '）'
+      : '最新';
+    if (!ui.selectedRunId) {
+      latestOpt.selected = true;
+    }
+    runSelect.appendChild(latestOpt);
+
+    runs.forEach(function (run, index) {
+      var id = run && run.run_id ? run.run_id : '';
+      if (!id) {
+        return;
+      }
+      var opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent =
+        formatRunBatch(id) + (index === 0 ? ' · 最新' : '') + ' · ' + id;
+      if (ui.selectedRunId && ui.selectedRunId === id) {
+        opt.selected = true;
+      }
+      runSelect.appendChild(opt);
+    });
+
+    runSelect.addEventListener('change', function () {
+      ui.selectedRunId = runSelect.value || '';
+      loadData();
+    });
+
+    wrap.appendChild(label);
+    wrap.appendChild(runSelect);
+    return wrap;
+  }
+
   function loadData() {
     if (!capturedAuth) {
       ui.status.textContent = '请先登录管理页，再打开日志质检。';
@@ -783,24 +910,44 @@
     delete ui.status.dataset.kind;
     ui.refresh.disabled = true;
 
+    var runQuery = ui.selectedRunId
+      ? 'run_id=' + encodeURIComponent(ui.selectedRunId)
+      : '';
+    var summaryQuery = SUMMARY_ENDPOINT + (runQuery ? '?' + runQuery : '');
     var sessionsQuery =
       SESSIONS_ENDPOINT +
       '?status=' +
       encodeURIComponent(ui.statusFilter || 'fail') +
       '&limit=50' +
       (ui.reasonFilter ? '&reason=' + encodeURIComponent(ui.reasonFilter) : '') +
-      (ui.query ? '&q=' + encodeURIComponent(ui.query) : '');
+      (ui.query ? '&q=' + encodeURIComponent(ui.query) : '') +
+      (runQuery ? '&' + runQuery : '');
 
-    Promise.all([authedFetch(SUMMARY_ENDPOINT), authedFetch(sessionsQuery), authedFetch(STATUS_ENDPOINT)])
+    Promise.all([
+      authedFetch(summaryQuery),
+      authedFetch(sessionsQuery),
+      authedFetch(STATUS_ENDPOINT),
+      authedFetch(RUNS_ENDPOINT),
+    ])
       .then(function (parts) {
         ui.refresh.disabled = false;
         var statusPayload = parts[2] || {};
+        var runsPayload = parts[3] || {};
         var running = !!statusPayload.running;
         setRunControls(running);
         if (parts[1] && parts[1].run_id) {
           ui.runId = parts[1].run_id;
         } else if (statusPayload.latest_run_id) {
           ui.runId = statusPayload.latest_run_id;
+        }
+        // If user pinned a run that was GC'd, fall back to latest.
+        if (ui.selectedRunId) {
+          var stillThere = ((runsPayload.runs || []) || []).some(function (r) {
+            return r && r.run_id === ui.selectedRunId;
+          });
+          if (!stillThere && (runsPayload.runs || []).length) {
+            ui.selectedRunId = '';
+          }
         }
         if (running) {
           ui.status.textContent = statusPayload.message || '质检进行中…';
@@ -812,7 +959,7 @@
           ui.status.textContent = statusPayload.message || '正常';
           delete ui.status.dataset.kind;
         }
-        render(parts[0], parts[1]);
+        render(parts[0], parts[1], runsPayload);
       })
       .catch(function (err) {
         ui.refresh.disabled = false;
