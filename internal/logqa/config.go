@@ -113,17 +113,17 @@ func applyDefaults(cfg *Config) {
 	if strings.TrimSpace(cfg.Scan.MinFileAgeRaw) == "" {
 		cfg.Scan.MinFileAgeRaw = "10m"
 	}
-	if cfg.Scan.MaxFilesPerRun <= 0 {
-		cfg.Scan.MaxFilesPerRun = 500
-	}
+	// MaxFilesPerRun: 0 means unlimited (full scan). Do not rewrite 0 to a positive default.
 	if strings.TrimSpace(cfg.Scan.MaxBytesPerRunRaw) == "" {
-		cfg.Scan.MaxBytesPerRunRaw = "8GiB"
+		// 0 means unlimited; empty string defaults to unlimited for full-scan deployments.
+		cfg.Scan.MaxBytesPerRunRaw = "0"
 	}
 	if cfg.Scan.MaxFileConcurrency <= 0 {
 		cfg.Scan.MaxFileConcurrency = 2
 	}
 	if strings.TrimSpace(cfg.Scan.MaxFileSizeRaw) == "" {
-		cfg.Scan.MaxFileSizeRaw = "256MiB"
+		// 0 means unlimited single-file size.
+		cfg.Scan.MaxFileSizeRaw = "0"
 	}
 	if cfg.Rules.MinPromptRounds <= 0 {
 		cfg.Rules.MinPromptRounds = 4
@@ -181,19 +181,22 @@ func (cfg *Config) Validate() error {
 	cfg.Scan.MinFileAge = minAge
 
 	maxBytes, errBytes := parseByteSize(cfg.Scan.MaxBytesPerRunRaw)
-	if errBytes != nil || maxBytes <= 0 {
+	if errBytes != nil || maxBytes < 0 {
 		return fmt.Errorf("invalid scan.max-bytes-per-run %q: %w", cfg.Scan.MaxBytesPerRunRaw, errBytes)
 	}
+	// 0 = unlimited bytes per run
 	cfg.Scan.MaxBytesPerRun = maxBytes
 
 	maxFileSize, errFileSize := parseByteSize(cfg.Scan.MaxFileSizeRaw)
-	if errFileSize != nil || maxFileSize <= 0 {
+	if errFileSize != nil || maxFileSize < 0 {
 		return fmt.Errorf("invalid scan.max-file-size %q: %w", cfg.Scan.MaxFileSizeRaw, errFileSize)
 	}
+	// 0 = unlimited single file size
 	cfg.Scan.MaxFileSize = maxFileSize
 
-	if cfg.Scan.MaxFilesPerRun <= 0 {
-		return fmt.Errorf("scan.max-files-per-run must be positive")
+	// MaxFilesPerRun: 0 = unlimited files per run (full scan)
+	if cfg.Scan.MaxFilesPerRun < 0 {
+		return fmt.Errorf("scan.max-files-per-run must be >= 0 (0 means unlimited)")
 	}
 	if cfg.Scan.MaxFileConcurrency <= 0 {
 		return fmt.Errorf("scan.max-file-concurrency must be positive")

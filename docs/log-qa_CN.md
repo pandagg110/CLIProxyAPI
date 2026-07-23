@@ -24,6 +24,11 @@ cp log-qa.example.yaml log-qa.yaml
 | `schedule.interval` | 默认 `30m` |
 | `schedule.initial-delay` | 默认 `12m`，错开 uploader `:05` |
 | `rules.min-prompt-rounds` | 默认 `4`（即有效轮次 > 3） |
+| `scan.max-files-per-run` | **`0` = 全量**（不限制文件数）；`>0` 时本轮最多扫 N 个新文件 |
+| `scan.max-bytes-per-run` | **`0` = 全量**；`>0` 时本轮最多扫描该字节数 |
+| `scan.max-file-size` | **`0` = 不限制单文件大小** |
+
+面板「部分扫描 = 是」表示本轮触发了 files/bytes 上限。全量扫描请将上述三项设为 `0`。
 
 ## 2. 运行
 

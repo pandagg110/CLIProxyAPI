@@ -20,10 +20,12 @@ schedule:
 scan:
   min-file-age: 10m
   skip-current-hour: true
-  max-files-per-run: 500
-  max-bytes-per-run: 8GiB
+  # Full scan defaults: 0 = unlimited (do not stop at 500 files / 8GiB).
+  max-files-per-run: 0
+  max-bytes-per-run: 0
   max-file-concurrency: 2
-  max-file-size: 256MiB
+  # 0 = no per-file size cap
+  max-file-size: 0
 
 rules:
   # Effective user prompts must be >= this value (plan: >3 means 4).

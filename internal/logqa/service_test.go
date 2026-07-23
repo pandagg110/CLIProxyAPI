@@ -61,10 +61,10 @@ ok
 		Scan: ScanConfig{
 			MinFileAge:         0,
 			SkipCurrentHour:    false,
-			MaxFilesPerRun:     100,
-			MaxBytesPerRun:     1 << 30,
+			MaxFilesPerRun:     0, // unlimited full scan
+			MaxBytesPerRun:     0,
 			MaxFileConcurrency: 2,
-			MaxFileSize:        1 << 30,
+			MaxFileSize:        0,
 		},
 		Rules: RulesConfig{
 			MinPromptRounds:          4,

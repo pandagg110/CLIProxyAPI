@@ -142,7 +142,7 @@ func (s *Service) runLocked(ctx context.Context) (RunSummary, error) {
 			summary.FilesSkippedHot++
 			return nil
 		}
-		if info.Size() > s.cfg.Scan.MaxFileSize {
+		if s.cfg.Scan.MaxFileSize > 0 && info.Size() > s.cfg.Scan.MaxFileSize {
 			summary.FilesSkippedTooLarge++
 			return nil
 		}
@@ -178,16 +178,16 @@ func (s *Service) runLocked(ctx context.Context) (RunSummary, error) {
 		}
 	}
 
-	// Apply per-run limits
+	// Apply per-run limits. 0 means unlimited (full scan of all pending files).
 	partial := false
 	var bytesBudget int64
 	limitedJobs := make([]fileJob, 0, len(jobs))
 	for _, job := range jobs {
-		if len(limitedJobs) >= s.cfg.Scan.MaxFilesPerRun {
+		if s.cfg.Scan.MaxFilesPerRun > 0 && len(limitedJobs) >= s.cfg.Scan.MaxFilesPerRun {
 			partial = true
 			break
 		}
-		if bytesBudget+job.info.Size() > s.cfg.Scan.MaxBytesPerRun {
+		if s.cfg.Scan.MaxBytesPerRun > 0 && bytesBudget+job.info.Size() > s.cfg.Scan.MaxBytesPerRun {
 			partial = true
 			break
 		}
