@@ -49,7 +49,13 @@ go build -o bin/log-qa ./cmd/log-qa
 
 ## 3. 规则（session 最终快照）
 
-对每个 `session_id`，在本地可见的请求中取 **input 最长**（其次时间最晚）的快照，再判定：
+**Session 快照**：同一 `session_id` 下通常有多条请求日志（多轮 turn）。质检不会对每一条分别出“是否合格”，而是先选出 **一条代表请求**，再用该条上的指标判定整个 session。选取规则：
+
+1. **排除 `request_kind` 含 `compact` 的 compaction 轮次**（它们常把整段历史塞进 `input`，体积最大，但有效提问会被整单过滤成 0）
+2. 在剩余请求中取 **input 最长**，其次 **时间最晚**
+3. 若 session **只剩** compaction 日志（普通 turn 已被 uploader 删掉），则回退用最长的 compaction 作快照
+
+对该快照再判定：
 
 1. **有效 user prompt 数 ≥ min-prompt-rounds（默认 4）**  
    排除 title/summary、IDE context、`environment_context`
@@ -57,6 +63,11 @@ go build -o bin/log-qa ./cmd/log-qa
 3. **无完全相同的 assistant 文本重复**
 
 同一 session 下的 subagent thread **会合并**进同一条样本。
+
+面板上「失败会话数（按原因）」里的数字是**该原因失败的会话个数**，不是轮次阈值。  
+例如「有效提问轮次不足：8 个」= 有 8 个 session 未达到 ≥4 轮，**不是**“不足 8 轮就失败”。
+
+运行批次（`run_id`）按配置时区（默认 **Asia/Shanghai / 北京时间**）命名，形如 `2026-07-23T17-56-55+0800`。
 
 ## 4. 报告位置
 

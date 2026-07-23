@@ -119,8 +119,13 @@ func gcOldReports(workDir string, keepRuns int) error {
 	return nil
 }
 
+// newRunID builds a filesystem-safe run directory name in the wall-clock of t.
+// Callers should pass a time already located in the configured timezone
+// (default Asia/Shanghai). Example: 2026-07-23T17-56-55+0800
 func newRunID(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15-04-05Z")
+	// -0700 is Go's reference layout for numeric zone offsets; for CST it yields +0800.
+	// Avoid ":" so the id remains a single path segment on all OSes.
+	return t.Format("2006-01-02T15-04-05-0700")
 }
 
 // ReadLatestPointer loads reports/latest.json if present.

@@ -2,10 +2,18 @@ package logqa
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
 // AggregateSessions groups request records by session_id and picks the max-input snapshot.
+//
+// A session snapshot is the single request record used to judge the whole session:
+// among all logs sharing the same session_id, we pick the one with the longest input
+// (then latest timestamp) and evaluate prompt_rounds / tool_calls / duplicate assistant
+// only on that request. Compaction turns are excluded from snapshot selection when any
+// non-compaction request exists, because they embed full history but zero out "real"
+// user prompts via request_kind filtering.
 func AggregateSessions(requests []RequestRecord, rules RulesConfig) []SessionRecord {
 	type group struct {
 		requests []RequestRecord
@@ -87,12 +95,26 @@ func AggregateSessions(requests []RequestRecord, rules RulesConfig) []SessionRec
 	return sessions
 }
 
+// pickSnapshot chooses the request used as the session's QA verdict source.
+// Prefer non-compaction requests; only fall back to compaction when that is all we have.
+// Among candidates: max InputLen, then latest Timestamp.
 func pickSnapshot(requests []RequestRecord) RequestRecord {
 	if len(requests) == 0 {
 		return RequestRecord{}
 	}
-	best := requests[0]
-	for _, r := range requests[1:] {
+	candidates := make([]RequestRecord, 0, len(requests))
+	for _, r := range requests {
+		if isCompactionRequestKind(r.RequestKind) {
+			continue
+		}
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		// Session only has compaction turns (earlier turn logs may already be gone).
+		candidates = requests
+	}
+	best := candidates[0]
+	for _, r := range candidates[1:] {
 		if r.InputLen > best.InputLen {
 			best = r
 			continue
@@ -102,6 +124,16 @@ func pickSnapshot(requests []RequestRecord) RequestRecord {
 		}
 	}
 	return best
+}
+
+// isCompactionRequestKind reports whether a Codex turn is a context checkpoint compaction.
+// Those turns often carry the longest input (full history) but are not real user turns.
+func isCompactionRequestKind(requestKind string) bool {
+	rk := strings.ToLower(strings.TrimSpace(requestKind))
+	if rk == "" {
+		return false
+	}
+	return strings.Contains(rk, "compact")
 }
 
 func sortedKeys(set map[string]struct{}) []string {

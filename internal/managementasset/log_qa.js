@@ -551,6 +551,55 @@
       .join('，');
   }
 
+  // Display run batch in Asia/Shanghai (北京时间). Accepts both legacy UTC ids
+  // (…Z) and new offset ids (…+0800 / …-0700 layout).
+  function formatRunBatch(runId) {
+    var raw = String(runId || '').trim();
+    if (!raw || raw === '-') {
+      return '-';
+    }
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(Z|[+-]\d{4})?$/.exec(raw);
+    if (!m) {
+      return raw;
+    }
+    var year = Number(m[1]);
+    var month = Number(m[2]);
+    var day = Number(m[3]);
+    var hour = Number(m[4]);
+    var minute = Number(m[5]);
+    var second = Number(m[6]);
+    var zone = m[7] || 'Z';
+    var utcMs;
+    if (zone === 'Z') {
+      utcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+    } else {
+      var sign = zone.charAt(0) === '-' ? -1 : 1;
+      var offHour = Number(zone.slice(1, 3));
+      var offMin = Number(zone.slice(3, 5));
+      var offsetMin = sign * (offHour * 60 + offMin);
+      utcMs = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMin * 60 * 1000;
+    }
+    // Format as Beijing wall time (UTC+8).
+    var bj = new Date(utcMs + 8 * 60 * 60 * 1000);
+    function pad(n) {
+      return n < 10 ? '0' + n : String(n);
+    }
+    return (
+      bj.getUTCFullYear() +
+      '-' +
+      pad(bj.getUTCMonth() + 1) +
+      '-' +
+      pad(bj.getUTCDate()) +
+      ' ' +
+      pad(bj.getUTCHours()) +
+      ':' +
+      pad(bj.getUTCMinutes()) +
+      ':' +
+      pad(bj.getUTCSeconds()) +
+      '（北京时间）'
+    );
+  }
+
   function renderEmpty(message) {
     ui.content.replaceChildren();
     ui.content.appendChild(
@@ -564,7 +613,8 @@
       element(
         'p',
         'cpa-lqa-note',
-        '仅检查本地尚未上传的 .log 文件。已上传或已删除的日志不会纳入。质检不会拦截或修改上传服务。'
+        '仅检查本地尚未上传的 .log 文件。已上传或已删除的日志不会纳入。质检不会拦截或修改上传服务。' +
+          '判定标准：有效提问轮次默认需 ≥ 4（非「不足 8 轮」）；下方数字是失败会话个数，不是轮次阈值。'
       )
     );
 
@@ -594,14 +644,14 @@
       element(
         'p',
         'cpa-lqa-status',
-        '失败原因 — 有效提问轮次不足：' +
+        '失败会话数（按原因）— 有效提问轮次不足：' +
           (hist.prompt_rounds || 0) +
-          '，无工具调用：' +
+          ' 个，无工具调用：' +
           (hist.no_tool_call || 0) +
-          '，助手回复重复：' +
+          ' 个，助手回复重复：' +
           (hist.duplicate_assistant || 0) +
-          ' | 运行批次：' +
-          (s.run_id || '-')
+          ' 个 | 运行批次：' +
+          formatRunBatch(s.run_id)
       )
     );
 
