@@ -91,12 +91,12 @@ func (h *Handler) GetLogQAStatus(c *gin.Context) {
 		"timezone":      settings.timezone,
 		"latest_run_id": "",
 		"has_report":    false,
-		"message":       "No QA report yet. Run log-qa service first.",
+		"message":       "尚无质检报告。请先运行 log-qa 服务。",
 	}
 	if errLatest == nil && (latest.RunID != "" || latest.Dir != "") {
 		status["has_report"] = true
 		status["latest_run_id"] = firstNonEmptyStr(latest.RunID, latest.Dir)
-		status["message"] = "ok"
+		status["message"] = "正常"
 	}
 	c.JSON(http.StatusOK, status)
 }
@@ -110,7 +110,7 @@ func (h *Handler) GetLogQASummary(c *gin.Context) {
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusOK, gin.H{
 				"has_report": false,
-				"message":    "No QA report yet",
+				"message":    "尚无质检报告",
 			})
 			return
 		}
@@ -136,7 +136,7 @@ func (h *Handler) GetLogQARuns(c *gin.Context) {
 	dir := filepath.Join(settings.workDir, "reports")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"runs": []any{}, "message": "No reports directory"})
+		c.JSON(http.StatusOK, gin.H{"runs": []any{}, "message": "报告目录不存在"})
 		return
 	}
 	type runInfo struct {

@@ -230,9 +230,10 @@
       return ui;
     }
     addStyles();
-    var launcher = element('button', '', 'LOG QA');
+    var launcher = element('button', '', '日志质检');
     launcher.id = 'cpa-log-qa-button';
     launcher.type = 'button';
+    launcher.setAttribute('aria-label', '日志质检');
     launcher.hidden = true;
     launcher.addEventListener('click', openOverlay);
 
@@ -243,22 +244,23 @@
     var panel = element('div', 'cpa-lqa-panel');
     var header = element('div', 'cpa-lqa-header');
     var titles = element('div', '');
-    titles.appendChild(element('h2', 'cpa-lqa-title', 'Log QA'));
+    titles.appendChild(element('h2', 'cpa-lqa-title', '日志质检'));
     titles.appendChild(
       element(
         'p',
         'cpa-lqa-subtitle',
-        'Local unuploaded request-log quality check (does not block uploader)'
+        '本地未上传请求日志质检（不拦截上传）'
       )
     );
     var actions = element('div', 'cpa-lqa-actions');
-    var refresh = element('button', 'cpa-lqa-button', 'Refresh');
+    var refresh = element('button', 'cpa-lqa-button', '刷新');
     refresh.type = 'button';
     refresh.addEventListener('click', function () {
       loadData();
     });
     var close = element('button', 'cpa-lqa-close', '×');
     close.type = 'button';
+    close.setAttribute('aria-label', '关闭');
     close.addEventListener('click', closeOverlay);
     actions.appendChild(refresh);
     actions.appendChild(close);
@@ -324,7 +326,11 @@
     }
     return nativeFetch(apiURL(path), { headers: headers }).then(function (response) {
       if (!response.ok) {
-        throw new Error('HTTP ' + response.status);
+        var status = Number(response.status || 0);
+        if (status === 401 || status === 403) {
+          throw new Error('认证已失效，请刷新管理页并重新登录。');
+        }
+        throw new Error('加载失败（HTTP ' + status + '）。');
       }
       return response.json();
     });
@@ -337,9 +343,45 @@
     return (rate * 100).toFixed(1) + '%';
   }
 
+  function reasonLabel(code) {
+    switch (String(code || '')) {
+      case 'prompt_rounds':
+        return '有效提问轮次不足';
+      case 'no_tool_call':
+        return '无工具调用';
+      case 'duplicate_assistant':
+        return '助手回复重复';
+      default:
+        return code || '';
+    }
+  }
+
+  function formatFailReasons(reasons) {
+    if (!reasons || !reasons.length) {
+      return '';
+    }
+    return reasons
+      .map(function (reason) {
+        var text = String(reason || '');
+        if (text.indexOf('prompt_rounds') === 0) {
+          return '有效提问轮次不足';
+        }
+        if (text === 'no_tool_call') {
+          return '无工具调用';
+        }
+        if (text.indexOf('duplicate_assistant') === 0) {
+          return '助手回复重复';
+        }
+        return text;
+      })
+      .join('，');
+  }
+
   function renderEmpty(message) {
     ui.content.replaceChildren();
-    ui.content.appendChild(element('p', 'cpa-lqa-note', message || 'No QA report yet. Start the log-qa service.'));
+    ui.content.appendChild(
+      element('p', 'cpa-lqa-note', message || '尚无质检报告。请先启动 log-qa 服务。')
+    );
   }
 
   function render(summaryPayload, sessionsPayload) {
@@ -348,12 +390,12 @@
       element(
         'p',
         'cpa-lqa-note',
-        'Only checks local unuploaded .log files. Uploaded/deleted logs are not included. QA never blocks or modifies uploader.'
+        '仅检查本地尚未上传的 .log 文件。已上传或已删除的日志不会纳入。质检不会拦截或修改上传服务。'
       )
     );
 
     if (!summaryPayload || !summaryPayload.has_report || !summaryPayload.summary) {
-      renderEmpty((summaryPayload && summaryPayload.message) || 'No QA report yet.');
+      renderEmpty((summaryPayload && summaryPayload.message) || '尚无质检报告。');
       return;
     }
 
@@ -365,12 +407,12 @@
       node.appendChild(element('span', 'value', value));
       cards.appendChild(node);
     }
-    card('Pass rate', pct(s.pass_rate));
-    card('Sessions', String(s.sessions_total || 0));
-    card('Pass', String(s.sessions_pass || 0));
-    card('Fail', String(s.sessions_fail || 0));
-    card('Files scanned', String(s.files_scanned || 0));
-    card('Partial run', s.partial ? 'yes' : 'no');
+    card('合格率', pct(s.pass_rate));
+    card('会话数', String(s.sessions_total || 0));
+    card('通过', String(s.sessions_pass || 0));
+    card('失败', String(s.sessions_fail || 0));
+    card('扫描文件数', String(s.files_scanned || 0));
+    card('部分扫描', s.partial ? '是' : '否');
     ui.content.appendChild(cards);
 
     var hist = s.fail_reason_hist || {};
@@ -378,24 +420,28 @@
       element(
         'p',
         'cpa-lqa-status',
-        'Fail reasons — prompt_rounds: ' +
+        '失败原因 — 有效提问轮次不足：' +
           (hist.prompt_rounds || 0) +
-          ', no_tool_call: ' +
+          '，无工具调用：' +
           (hist.no_tool_call || 0) +
-          ', duplicate_assistant: ' +
+          '，助手回复重复：' +
           (hist.duplicate_assistant || 0) +
-          ' | run: ' +
+          ' | 运行批次：' +
           (s.run_id || '-')
       )
     );
 
     var filters = element('div', 'cpa-lqa-filters');
     var statusSelect = document.createElement('select');
-    ;['fail', 'pass', 'all'].forEach(function (value) {
+    ;[
+      ['fail', '失败'],
+      ['pass', '通过'],
+      ['all', '全部'],
+    ].forEach(function (pair) {
       var opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = value;
-      if (value === ui.statusFilter) {
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      if (pair[0] === ui.statusFilter) {
         opt.selected = true;
       }
       statusSelect.appendChild(opt);
@@ -406,10 +452,10 @@
     });
     var reasonSelect = document.createElement('select');
     ;[
-      ['', 'all reasons'],
-      ['prompt_rounds', 'prompt_rounds'],
-      ['no_tool_call', 'no_tool_call'],
-      ['duplicate_assistant', 'duplicate_assistant'],
+      ['', '全部原因'],
+      ['prompt_rounds', reasonLabel('prompt_rounds')],
+      ['no_tool_call', reasonLabel('no_tool_call')],
+      ['duplicate_assistant', reasonLabel('duplicate_assistant')],
     ].forEach(function (pair) {
       var opt = document.createElement('option');
       opt.value = pair[0];
@@ -425,7 +471,7 @@
     });
     var search = document.createElement('input');
     search.type = 'search';
-    search.placeholder = 'session / key';
+    search.placeholder = '会话 / Key';
     search.value = ui.query || '';
     search.addEventListener('change', function () {
       ui.query = search.value;
@@ -439,7 +485,7 @@
     var table = element('table', 'cpa-lqa-table');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
-    ;['status', 'session_id', 'prompts', 'tools', 'dup', 'reasons', 'keys'].forEach(function (h) {
+    ;['状态', '会话 ID', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key'].forEach(function (h) {
       headRow.appendChild(element('th', '', h));
     });
     thead.appendChild(headRow);
@@ -448,38 +494,42 @@
     var sessions = (sessionsPayload && sessionsPayload.sessions) || [];
     if (!sessions.length) {
       var emptyRow = document.createElement('tr');
-      var td = element('td', '', 'No sessions for this filter');
+      var td = element('td', '', '当前筛选条件下无会话');
       td.colSpan = 7;
       emptyRow.appendChild(td);
       tbody.appendChild(emptyRow);
     }
     sessions.forEach(function (row) {
       var tr = document.createElement('tr');
-      tr.appendChild(element('td', row.ok ? 'cpa-lqa-pass' : 'cpa-lqa-fail', row.ok ? 'pass' : 'fail'));
+      tr.appendChild(element('td', row.ok ? 'cpa-lqa-pass' : 'cpa-lqa-fail', row.ok ? '通过' : '失败'));
       tr.appendChild(element('td', 'cpa-lqa-mono', row.session_id || ''));
       tr.appendChild(element('td', '', String(row.prompt_rounds)));
       tr.appendChild(element('td', '', String(row.tool_calls)));
       tr.appendChild(element('td', '', String(row.dup_assistant_groups)));
-      tr.appendChild(element('td', '', (row.fail_reasons || []).join(', ')));
-      tr.appendChild(element('td', '', (row.key_names || []).join(', ')));
+      tr.appendChild(element('td', '', formatFailReasons(row.fail_reasons)));
+      tr.appendChild(element('td', '', (row.key_names || []).join('，')));
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
     ui.content.appendChild(table);
     if (sessionsPayload && typeof sessionsPayload.total === 'number') {
       ui.content.appendChild(
-        element('p', 'cpa-lqa-status', 'Showing ' + sessions.length + ' of ' + sessionsPayload.total + ' matched sessions')
+        element(
+          'p',
+          'cpa-lqa-status',
+          '显示 ' + sessions.length + ' / ' + sessionsPayload.total + ' 条匹配会话'
+        )
       );
     }
   }
 
   function loadData() {
     if (!capturedAuth) {
-      ui.status.textContent = 'Sign in to Management first, then open Log QA again.';
+      ui.status.textContent = '请先登录管理页，再打开日志质检。';
       ui.status.dataset.kind = 'error';
       return;
     }
-    ui.status.textContent = 'Loading…';
+    ui.status.textContent = '加载中…';
     delete ui.status.dataset.kind;
     ui.refresh.disabled = true;
 
@@ -494,7 +544,7 @@
     Promise.all([authedFetch(SUMMARY_ENDPOINT), authedFetch(sessionsQuery), authedFetch(STATUS_ENDPOINT)])
       .then(function (parts) {
         ui.refresh.disabled = false;
-        ui.status.textContent = parts[2] && parts[2].message ? parts[2].message : 'ok';
+        ui.status.textContent = parts[2] && parts[2].message ? parts[2].message : '正常';
         delete ui.status.dataset.kind;
         render(parts[0], parts[1]);
       })
