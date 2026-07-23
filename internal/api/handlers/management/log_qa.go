@@ -50,16 +50,8 @@ type logQASettings struct {
 }
 
 func (h *Handler) resolveLogQASettings() logQASettings {
-	// Prefer Docker layout defaults so Management reads the same reports log-qa writes.
 	settings := logQASettings{
-		workDir:  "/CLIProxyAPI/logs/log-qa",
-		logsRoot: "/CLIProxyAPI/logs/keys",
 		timezone: "Asia/Shanghai",
-	}
-	if h.cfg != nil && strings.TrimSpace(h.cfg.AuthDir) != "" {
-		// Non-docker fallback when auth-dir layout is used and no log-qa.yaml is found.
-		settings.workDir = filepath.Join(h.cfg.AuthDir, "log-qa")
-		settings.logsRoot = filepath.Join(h.cfg.AuthDir, "logs", "keys")
 	}
 	configDir := filepath.Dir(h.configFilePath)
 	candidates := []string{
@@ -92,10 +84,22 @@ func (h *Handler) resolveLogQASettings() logQASettings {
 		}
 		break
 	}
-	// If yaml was not found but Docker report dir exists, keep Docker defaults.
-	if !settings.found {
-		if st, err := os.Stat("/CLIProxyAPI/logs/log-qa/reports"); err == nil && st.IsDir() {
+	// Fallbacks when yaml missing or paths empty: Docker layout first, then auth-dir.
+	if strings.TrimSpace(settings.workDir) == "" {
+		if st, err := os.Stat("/CLIProxyAPI/logs/log-qa"); err == nil && st.IsDir() {
 			settings.workDir = "/CLIProxyAPI/logs/log-qa"
+		} else if h.cfg != nil && strings.TrimSpace(h.cfg.AuthDir) != "" {
+			settings.workDir = filepath.Join(h.cfg.AuthDir, "log-qa")
+		} else {
+			settings.workDir = "/CLIProxyAPI/logs/log-qa"
+		}
+	}
+	if strings.TrimSpace(settings.logsRoot) == "" {
+		if st, err := os.Stat("/CLIProxyAPI/logs/keys"); err == nil && st.IsDir() {
+			settings.logsRoot = "/CLIProxyAPI/logs/keys"
+		} else if h.cfg != nil && strings.TrimSpace(h.cfg.AuthDir) != "" {
+			settings.logsRoot = filepath.Join(h.cfg.AuthDir, "logs", "keys")
+		} else {
 			settings.logsRoot = "/CLIProxyAPI/logs/keys"
 		}
 	}

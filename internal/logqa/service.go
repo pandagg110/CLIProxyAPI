@@ -296,9 +296,9 @@ func (s *Service) runLocked(ctx context.Context) (RunSummary, error) {
 	}).Info("log-qa run completed")
 	if summary.SessionsTotal == 0 {
 		log.WithFields(log.Fields{
-			"logs_root": summary.LogsRoot,
-			"work_dir":  summary.WorkDir,
-			"files_seen": summary.FilesSeen,
+			"logs_root":   summary.LogsRoot,
+			"work_dir":    summary.WorkDir,
+			"files_seen":  summary.FilesSeen,
 			"state_files": len(state.Files),
 		}).Warn("log-qa produced zero sessions; Management will show empty if this run is latest")
 	}
