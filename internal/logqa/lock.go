@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // tryLockQA creates an exclusive lock file. Caller must close/remove.
@@ -13,11 +14,25 @@ type qaLock struct {
 	file *os.File
 }
 
+// LockPath returns the exclusive lock file path for a work directory.
+func LockPath(workDir string) string {
+	return filepath.Join(workDir, "qa.lock")
+}
+
+// IsRunning reports whether a QA pass currently holds the work-dir lock.
+func IsRunning(workDir string) bool {
+	if strings.TrimSpace(workDir) == "" {
+		return false
+	}
+	info, err := os.Stat(LockPath(workDir))
+	return err == nil && !info.IsDir()
+}
+
 func acquireQALock(workDir string) (*qaLock, error) {
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create work dir: %w", err)
 	}
-	path := filepath.Join(workDir, "qa.lock")
+	path := LockPath(workDir)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {

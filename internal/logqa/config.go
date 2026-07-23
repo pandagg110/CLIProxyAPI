@@ -67,6 +67,22 @@ type ReportConfig struct {
 	KeepRuns int `yaml:"keep-runs"`
 }
 
+// ConfigFromPaths builds a validated Config using defaults for the given paths.
+// Prefer LoadConfig when a log-qa.yaml is available so scan/rules match production.
+func ConfigFromPaths(logsRoot, workDir, timezone string) (Config, error) {
+	cfg := Config{
+		LogsRoot: logsRoot,
+		WorkDir:  workDir,
+		Timezone: timezone,
+	}
+	applyDefaults(&cfg)
+	// Paths are already expected absolute (or will be used as-is by callers).
+	if errValidate := cfg.Validate(); errValidate != nil {
+		return Config{}, errValidate
+	}
+	return cfg, nil
+}
+
 // LoadConfig reads and validates a log-qa YAML configuration file.
 func LoadConfig(path string) (Config, error) {
 	absolutePath, errAbsolute := filepath.Abs(path)

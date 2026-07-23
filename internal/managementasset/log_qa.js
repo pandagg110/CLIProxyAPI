@@ -6,8 +6,11 @@
   var STATUS_ENDPOINT = '/v0/management/log-qa/status';
   var SUMMARY_ENDPOINT = '/v0/management/log-qa/summary';
   var SESSIONS_ENDPOINT = '/v0/management/log-qa/sessions';
+  var RUN_ENDPOINT = '/v0/management/log-qa/run';
+  var SESSION_LOGS_ENDPOINT = '/v0/management/log-qa/sessions/logs';
   var AUTHORIZATION = 'authorization';
   var MANAGEMENT_KEY = 'x-management-key';
+  var POLL_INTERVAL_MS = 2000;
 
   if (window[INSTALL_FLAG]) {
     return;
@@ -18,6 +21,8 @@
   var capturedAuth = null;
   var ui = null;
   var previousBodyOverflow = '';
+  var pollTimer = null;
+  var runInProgress = false;
 
   function managementTarget(input) {
     var raw = input;
@@ -205,11 +210,15 @@
       '.cpa-lqa-title{margin:0;font-size:21px;font-weight:750}',
       '.cpa-lqa-subtitle{margin:5px 0 0;color:var(--text-secondary,#64748b);font-size:13px;line-height:1.5}',
       '.cpa-lqa-actions{display:flex;gap:8px}',
-      '.cpa-lqa-button,.cpa-lqa-close{border:1px solid var(--border-color,#d8dee9);border-radius:9px;background:var(--bg-secondary,#f5f7fa);color:var(--text-primary,#172033);font:600 13px/1.2 inherit;cursor:pointer}',
+      '.cpa-lqa-button,.cpa-lqa-close,.cpa-lqa-link{border:1px solid var(--border-color,#d8dee9);border-radius:9px;background:var(--bg-secondary,#f5f7fa);color:var(--text-primary,#172033);font:600 13px/1.2 inherit;cursor:pointer}',
       '.cpa-lqa-button{padding:8px 12px}.cpa-lqa-close{width:34px;height:34px;font-size:21px}',
+      '.cpa-lqa-button-primary{background:#0f766e;border-color:#0f766e;color:#fff}',
+      '.cpa-lqa-button:disabled,.cpa-lqa-link:disabled{opacity:.55;cursor:not-allowed}',
+      '.cpa-lqa-link{padding:4px 8px;font-size:12px;white-space:nowrap}',
       '.cpa-lqa-body{overflow:auto;padding:18px 22px 24px}',
       '.cpa-lqa-status{min-height:20px;margin-bottom:12px;color:var(--text-secondary,#64748b);font-size:13px}',
       '.cpa-lqa-status[data-kind="error"]{padding:10px 12px;border:1px solid #ef444466;border-radius:9px;background:#ef444414;color:#b91c1c}',
+      '.cpa-lqa-status[data-kind="running"]{padding:10px 12px;border:1px solid #0f766e66;border-radius:9px;background:#0f766e14;color:#0f766e}',
       '.cpa-lqa-note{margin:0 0 14px;padding:10px 12px;border-left:3px solid #0f766e;border-radius:6px;background:color-mix(in srgb,#0f766e 10%,transparent);color:var(--text-secondary,#64748b);font-size:12px;line-height:1.6}',
       '.cpa-lqa-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}',
       '.cpa-lqa-card{padding:12px 14px;border:1px solid var(--border-color,#d8dee9);border-radius:12px;background:var(--bg-secondary,#f8fafc)}',
@@ -253,6 +262,9 @@
       )
     );
     var actions = element('div', 'cpa-lqa-actions');
+    var runNow = element('button', 'cpa-lqa-button cpa-lqa-button-primary', '立即质检');
+    runNow.type = 'button';
+    runNow.addEventListener('click', triggerRun);
     var refresh = element('button', 'cpa-lqa-button', '刷新');
     refresh.type = 'button';
     refresh.addEventListener('click', function () {
@@ -262,6 +274,7 @@
     close.type = 'button';
     close.setAttribute('aria-label', '关闭');
     close.addEventListener('click', closeOverlay);
+    actions.appendChild(runNow);
     actions.appendChild(refresh);
     actions.appendChild(close);
     header.appendChild(titles);
@@ -289,10 +302,13 @@
       status: status,
       content: content,
       refresh: refresh,
+      runNow: runNow,
       statusFilter: 'fail',
       reasonFilter: '',
       query: '',
+      runId: '',
     };
+    setRunControls(false);
     return ui;
   }
 
@@ -310,6 +326,7 @@
     }
     ui.overlay.hidden = true;
     document.body.style.overflow = previousBodyOverflow;
+    stopPolling();
   }
 
   function apiURL(path) {
@@ -319,21 +336,178 @@
     return capturedAuth.apiRoot.replace(/\/v0\/management$/, '') + path;
   }
 
-  function authedFetch(path) {
+  function authHeaders() {
     var headers = {};
     if (capturedAuth) {
       headers[capturedAuth.headerName] = capturedAuth.headerValue;
     }
-    return nativeFetch(apiURL(path), { headers: headers }).then(function (response) {
+    return headers;
+  }
+
+  function authedFetch(path, options) {
+    var init = options || {};
+    var headers = authHeaders();
+    if (init.headers) {
+      Object.keys(init.headers).forEach(function (key) {
+        headers[key] = init.headers[key];
+      });
+    }
+    return nativeFetch(apiURL(path), {
+      method: init.method || 'GET',
+      headers: headers,
+      body: init.body,
+    }).then(function (response) {
       if (!response.ok) {
         var status = Number(response.status || 0);
         if (status === 401 || status === 403) {
           throw new Error('认证已失效，请刷新管理页并重新登录。');
         }
-        throw new Error('加载失败（HTTP ' + status + '）。');
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (payload) {
+            var message =
+              (payload && (payload.error || payload.message)) ||
+              '请求失败（HTTP ' + status + '）。';
+            var err = new Error(message);
+            err.status = status;
+            err.payload = payload;
+            throw err;
+          });
       }
-      return response.json();
+      var contentType = String(response.headers.get('content-type') || '');
+      if (init.raw) {
+        return response;
+      }
+      if (contentType.indexOf('application/json') >= 0 || contentType.indexOf('+json') >= 0) {
+        return response.json();
+      }
+      return response;
     });
+  }
+
+  function setRunControls(running) {
+    runInProgress = !!running;
+    if (!ui) {
+      return;
+    }
+    if (ui.runNow) {
+      ui.runNow.disabled = runInProgress;
+      ui.runNow.textContent = runInProgress ? '质检中…' : '立即质检';
+    }
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(function () {
+      if (!ui || ui.overlay.hidden) {
+        stopPolling();
+        return;
+      }
+      authedFetch(STATUS_ENDPOINT)
+        .then(function (statusPayload) {
+          var running = !!(statusPayload && statusPayload.running);
+          setRunControls(running);
+          if (running) {
+            ui.status.textContent = (statusPayload && statusPayload.message) || '质检进行中…';
+            ui.status.dataset.kind = 'running';
+            return;
+          }
+          stopPolling();
+          loadData();
+        })
+        .catch(function () {
+          // Keep polling; transient errors should not unlock the button early.
+        });
+    }, POLL_INTERVAL_MS);
+  }
+
+  function triggerRun() {
+    if (!capturedAuth) {
+      ui.status.textContent = '请先登录管理页，再打开日志质检。';
+      ui.status.dataset.kind = 'error';
+      return;
+    }
+    if (runInProgress) {
+      return;
+    }
+    setRunControls(true);
+    ui.status.textContent = '正在启动质检…';
+    ui.status.dataset.kind = 'running';
+    authedFetch(RUN_ENDPOINT, { method: 'POST' })
+      .then(function (payload) {
+        ui.status.textContent = (payload && payload.message) || '质检已开始';
+        ui.status.dataset.kind = 'running';
+        startPolling();
+      })
+      .catch(function (err) {
+        var status = Number(err && err.status ? err.status : 0);
+        if (status === 409) {
+          setRunControls(true);
+          ui.status.textContent = String(err && err.message ? err.message : '质检正在进行中');
+          ui.status.dataset.kind = 'running';
+          startPolling();
+          return;
+        }
+        setRunControls(false);
+        ui.status.textContent = String(err && err.message ? err.message : err);
+        ui.status.dataset.kind = 'error';
+      });
+  }
+
+  function downloadFailedSession(sessionId, button) {
+    if (!sessionId || !capturedAuth) {
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = '下载中…';
+    }
+    var path =
+      SESSION_LOGS_ENDPOINT +
+      '?session_id=' +
+      encodeURIComponent(sessionId) +
+      (ui.runId ? '&run_id=' + encodeURIComponent(ui.runId) : '');
+    authedFetch(path, { raw: true })
+      .then(function (response) {
+        var disposition = String(response.headers.get('content-disposition') || '');
+        var filename = 'log-qa-fail-' + sessionId + '.zip';
+        var match = /filename="?([^"]+)"?/i.exec(disposition);
+        if (match && match[1]) {
+          filename = match[1];
+        }
+        return response.blob().then(function (blob) {
+          var url = URL.createObjectURL(blob);
+          var anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = filename;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(function () {
+            URL.revokeObjectURL(url);
+          }, 1000);
+        });
+      })
+      .catch(function (err) {
+        ui.status.textContent = String(err && err.message ? err.message : err);
+        ui.status.dataset.kind = 'error';
+      })
+      .then(function () {
+        if (button) {
+          button.disabled = false;
+          button.textContent = '下载日志';
+        }
+      });
   }
 
   function pct(rate) {
@@ -485,7 +659,7 @@
     var table = element('table', 'cpa-lqa-table');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
-    ;['状态', '会话 ID', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key'].forEach(function (h) {
+    ;['状态', '会话 ID', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key', '操作'].forEach(function (h) {
       headRow.appendChild(element('th', '', h));
     });
     thead.appendChild(headRow);
@@ -495,7 +669,7 @@
     if (!sessions.length) {
       var emptyRow = document.createElement('tr');
       var td = element('td', '', '当前筛选条件下无会话');
-      td.colSpan = 7;
+      td.colSpan = 8;
       emptyRow.appendChild(td);
       tbody.appendChild(emptyRow);
     }
@@ -508,6 +682,19 @@
       tr.appendChild(element('td', '', String(row.dup_assistant_groups)));
       tr.appendChild(element('td', '', formatFailReasons(row.fail_reasons)));
       tr.appendChild(element('td', '', (row.key_names || []).join('，')));
+      var actionCell = document.createElement('td');
+      if (!row.ok && row.session_id) {
+        var downloadBtn = element('button', 'cpa-lqa-link', '下载日志');
+        downloadBtn.type = 'button';
+        downloadBtn.title = '下载该失败会话的完整源日志（zip）';
+        downloadBtn.addEventListener('click', function () {
+          downloadFailedSession(row.session_id, downloadBtn);
+        });
+        actionCell.appendChild(downloadBtn);
+      } else {
+        actionCell.textContent = '-';
+      }
+      tr.appendChild(actionCell);
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
@@ -544,8 +731,24 @@
     Promise.all([authedFetch(SUMMARY_ENDPOINT), authedFetch(sessionsQuery), authedFetch(STATUS_ENDPOINT)])
       .then(function (parts) {
         ui.refresh.disabled = false;
-        ui.status.textContent = parts[2] && parts[2].message ? parts[2].message : '正常';
-        delete ui.status.dataset.kind;
+        var statusPayload = parts[2] || {};
+        var running = !!statusPayload.running;
+        setRunControls(running);
+        if (parts[1] && parts[1].run_id) {
+          ui.runId = parts[1].run_id;
+        } else if (statusPayload.latest_run_id) {
+          ui.runId = statusPayload.latest_run_id;
+        }
+        if (running) {
+          ui.status.textContent = statusPayload.message || '质检进行中…';
+          ui.status.dataset.kind = 'running';
+          if (!pollTimer) {
+            startPolling();
+          }
+        } else {
+          ui.status.textContent = statusPayload.message || '正常';
+          delete ui.status.dataset.kind;
+        }
         render(parts[0], parts[1]);
       })
       .catch(function (err) {

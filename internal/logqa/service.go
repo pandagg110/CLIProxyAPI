@@ -276,15 +276,32 @@ func (s *Service) runLocked(ctx context.Context) (RunSummary, error) {
 	}
 
 	log.WithFields(log.Fields{
-		"run_id":         summary.RunID,
-		"files_seen":     summary.FilesSeen,
-		"files_scanned":  summary.FilesScanned,
-		"sessions_total": summary.SessionsTotal,
-		"sessions_pass":  summary.SessionsPass,
-		"sessions_fail":  summary.SessionsFail,
-		"pass_rate":      summary.PassRate,
-		"partial":        summary.Partial,
+		"run_id":                     summary.RunID,
+		"logs_root":                  summary.LogsRoot,
+		"work_dir":                   summary.WorkDir,
+		"files_seen":                 summary.FilesSeen,
+		"files_scanned":              summary.FilesScanned,
+		"files_skipped_unchanged":    summary.FilesSkippedUnchanged,
+		"files_skipped_hot":          summary.FilesSkippedHot,
+		"files_skipped_current_hour": summary.FilesSkippedCurrentHour,
+		"files_skipped_too_large":    summary.FilesSkippedTooLarge,
+		"files_disappeared":          summary.FilesDisappeared,
+		"files_parse_error":          summary.FilesParseError,
+		"state_files":                len(state.Files),
+		"sessions_total":             summary.SessionsTotal,
+		"sessions_pass":              summary.SessionsPass,
+		"sessions_fail":              summary.SessionsFail,
+		"pass_rate":                  summary.PassRate,
+		"partial":                    summary.Partial,
 	}).Info("log-qa run completed")
+	if summary.SessionsTotal == 0 {
+		log.WithFields(log.Fields{
+			"logs_root": summary.LogsRoot,
+			"work_dir":  summary.WorkDir,
+			"files_seen": summary.FilesSeen,
+			"state_files": len(state.Files),
+		}).Warn("log-qa produced zero sessions; Management will show empty if this run is latest")
+	}
 
 	_ = scannedNow // kept for clarity; requests written from allRequests
 	return summary, nil

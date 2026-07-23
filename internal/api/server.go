@@ -881,7 +881,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/log-qa/status", s.mgmt.GetLogQAStatus)
 		mgmt.GET("/log-qa/summary", s.mgmt.GetLogQASummary)
 		mgmt.GET("/log-qa/sessions", s.mgmt.GetLogQASessions)
+		mgmt.GET("/log-qa/sessions/logs", s.mgmt.GetLogQASessionLogs)
 		mgmt.GET("/log-qa/runs", s.mgmt.GetLogQARuns)
+		mgmt.POST("/log-qa/run", s.mgmt.PostLogQARun)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)

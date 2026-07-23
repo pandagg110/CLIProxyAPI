@@ -84,10 +84,14 @@ work-dir/
 
 API（需 management 鉴权）：
 
-- `GET /v0/management/log-qa/status`
+- `GET /v0/management/log-qa/status`（含 `running`：是否质检中）
 - `GET /v0/management/log-qa/summary`
 - `GET /v0/management/log-qa/sessions`
+- `GET /v0/management/log-qa/sessions/logs?session_id=...`（下载失败会话完整源日志 zip）
 - `GET /v0/management/log-qa/runs`
+- `POST /v0/management/log-qa/run`（手动触发一轮质检；进行中返回 409）
+
+Management 面板支持 **立即质检**（质检中按钮置灰）与失败会话的 **下载日志**。
 
 ## 6. 与 uploader 并存
 
