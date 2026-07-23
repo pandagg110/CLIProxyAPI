@@ -27,6 +27,8 @@ services:
       - ${CLI_PROXY_AUTH_PATH:-./auths}:/CLIProxyAPI/auths
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ./log-uploader.yaml:/CLIProxyAPI/log-uploader.yaml
+      # Read-only QA reports for Management "LOG QA" panel
+      - ./log-qa.yaml:/CLIProxyAPI/log-qa.yaml:ro
     restart: unless-stopped
 
   log-uploader:
@@ -52,6 +54,29 @@ services:
     environment:
       TOS_ACCESS_KEY_ID: ${TOS_ACCESS_KEY_ID}
       TOS_SECRET_ACCESS_KEY: ${TOS_SECRET_ACCESS_KEY}
+    depends_on:
+      - cli-proxy-api
+    restart: unless-stopped
+
+  # Read-only quality checker for unuploaded local request logs.
+  # Does not take uploader locks and never deletes source logs.
+  log-qa:
+    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    container_name: cli-proxy-api-log-qa
+    command: ["./log-qa", "-config", "/CLIProxyAPI/log-qa.yaml"]
+    volumes:
+      - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
+      - ./log-qa.yaml:/CLIProxyAPI/log-qa.yaml:ro
+    env_file:
+      - .env
     depends_on:
       - cli-proxy-api
     restart: unless-stopped

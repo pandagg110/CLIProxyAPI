@@ -425,7 +425,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" || path == managementasset.RequestLogUsageScriptPath {
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" || path == managementasset.RequestLogUsageScriptPath || path == managementasset.LogQAScriptPath {
 				c.Next()
 				return
 			}
@@ -522,6 +522,8 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/management.html", s.serveManagementControlPanel)
 	s.engine.GET(managementasset.RequestLogUsageScriptPath, s.serveRequestLogUsageScript)
 	s.engine.HEAD(managementasset.RequestLogUsageScriptPath, s.serveRequestLogUsageScript)
+	s.engine.GET(managementasset.LogQAScriptPath, s.serveLogQAScript)
+	s.engine.HEAD(managementasset.LogQAScriptPath, s.serveLogQAScript)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
@@ -876,6 +878,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/request-log-usage", s.mgmt.GetRequestLogUsage)
+		mgmt.GET("/log-qa/status", s.mgmt.GetLogQAStatus)
+		mgmt.GET("/log-qa/summary", s.mgmt.GetLogQASummary)
+		mgmt.GET("/log-qa/sessions", s.mgmt.GetLogQASessions)
+		mgmt.GET("/log-qa/runs", s.mgmt.GetLogQARuns)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
@@ -1168,6 +1174,7 @@ func (s *Server) readManagementHTML(filePath string) ([]byte, error) {
 		return nil, fmt.Errorf("management control panel asset exceeds %d bytes", maxManagementHTMLSize)
 	}
 	html = managementasset.InjectRequestLogUsageScript(html)
+	html = managementasset.InjectLogQAScript(html)
 	s.managementHTMLCacheMu.Lock()
 	s.managementHTMLCachePath = filePath
 	s.managementHTMLCacheModTime = info.ModTime()
@@ -1185,6 +1192,25 @@ func (s *Server) serveRequestLogUsageScript(c *gin.Context) {
 	}
 
 	script := managementasset.RequestLogUsageScript()
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Type", "application/javascript; charset=utf-8")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Length", strconv.Itoa(len(script)))
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Data(http.StatusOK, "application/javascript; charset=utf-8", script)
+}
+
+func (s *Server) serveLogQAScript(c *gin.Context) {
+	cfg := s.cfg
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	script := managementasset.LogQAScript()
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Type", "application/javascript; charset=utf-8")
 	c.Header("X-Content-Type-Options", "nosniff")

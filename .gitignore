@@ -5,6 +5,7 @@ cli-proxy-api
 # Configuration
 config.yaml
 /log-uploader.yaml
+/log-qa.yaml
 .env
 
 # Generated content
@@ -32,6 +33,8 @@ auths/*
 # Documentation
 docs/*
 !docs/log-uploader_CN.md
+!docs/log-qa_CN.md
+!docs/deploy-docker_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

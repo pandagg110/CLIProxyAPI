@@ -1,0 +1,42 @@
+# Standalone read-only QA for unuploaded request logs.
+# Does not touch log-uploader locks, state, or source deletion.
+#
+# Docker Compose defaults (config mounted at /CLIProxyAPI/log-qa.yaml,
+# logs volume at /CLIProxyAPI/logs):
+logs-root: logs/keys
+work-dir: logs/log-qa
+#
+# Non-docker / auth-dir layout alternative:
+# logs-root: auths/logs/keys
+# work-dir: auths/log-qa
+timezone: Asia/Shanghai
+
+schedule:
+  interval: 30m
+  run-on-start: false
+  # Miss the typical uploader :05 burst.
+  initial-delay: 12m
+
+scan:
+  min-file-age: 10m
+  skip-current-hour: true
+  max-files-per-run: 500
+  max-bytes-per-run: 8GiB
+  max-file-concurrency: 2
+  max-file-size: 256MiB
+
+rules:
+  # Effective user prompts must be >= this value (plan: >3 means 4).
+  min-prompt-rounds: 4
+  require-tool-call: true
+  reject-duplicate-assistant: true
+  exclude-ide-context: true
+  exclude-env-context: true
+  exclude-title-summary: true
+
+aggregation:
+  key: session_id
+  snapshot: max_input_len
+
+report:
+  keep-runs: 48

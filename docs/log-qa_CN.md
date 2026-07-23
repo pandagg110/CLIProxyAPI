@@ -1,0 +1,153 @@
+# 本地未上传日志质检服务（log-qa）
+
+`log-qa` 是**独立进程**。它只读扫描 `logs-root/<key_name>/*.log`（尚未被 uploader 删除的源日志），按 **session_id** 聚合后套用甲方三条规则，把结果写到独立 `work-dir`，并在 Management 面板展示。
+
+它**不会**：
+
+- 获取 `log-uploader` 的锁
+- 读写 uploader 的 `state.json` / `audit.jsonl`
+- 删除、移动或修改任何源 `.log`
+- 拦截上传
+
+## 1. 配置
+
+```bash
+cp log-qa.example.yaml log-qa.yaml
+```
+
+关键项：
+
+| 字段 | 含义 |
+|------|------|
+| `logs-root` | 与 uploader 相同的源日志目录（只读） |
+| `work-dir` | 报告与 `qa-state.json`（独立目录） |
+| `schedule.interval` | 默认 `30m` |
+| `schedule.initial-delay` | 默认 `12m`，错开 uploader `:05` |
+| `rules.min-prompt-rounds` | 默认 `4`（即有效轮次 > 3） |
+
+## 2. 运行
+
+```bash
+# 单次
+go run ./cmd/log-qa --config log-qa.yaml --once
+
+# 常驻
+go run ./cmd/log-qa --config log-qa.yaml
+```
+
+构建：
+
+```bash
+go build -o bin/log-qa ./cmd/log-qa
+./bin/log-qa --config log-qa.yaml
+```
+
+## 3. 规则（session 最终快照）
+
+对每个 `session_id`，在本地可见的请求中取 **input 最长**（其次时间最晚）的快照，再判定：
+
+1. **有效 user prompt 数 ≥ min-prompt-rounds（默认 4）**  
+   排除 title/summary、IDE context、`environment_context`
+2. **至少 1 次工具调用**（`function_call` / `custom_tool_call` 等）
+3. **无完全相同的 assistant 文本重复**
+
+同一 session 下的 subagent thread **会合并**进同一条样本。
+
+## 4. 报告位置
+
+```text
+work-dir/
+  qa-state.json
+  qa.lock          # 运行中存在
+  reports/
+    latest.json
+    <run_id>/
+      summary.json
+      session_qa.jsonl
+      fail_sessions.jsonl
+      request_qa.jsonl
+```
+
+## 5. Management 查看
+
+主 API 需能**只读**同一 `work-dir`（以及能读到 `log-qa.yaml` 以解析路径）。
+
+登录 `/management.html` 后，右侧会出现 **LOG QA** 按钮，可查看：
+
+- 合格率、会话数、失败原因分布
+- 失败 session 列表（可筛选）
+
+API（需 management 鉴权）：
+
+- `GET /v0/management/log-qa/status`
+- `GET /v0/management/log-qa/summary`
+- `GET /v0/management/log-qa/sessions`
+- `GET /v0/management/log-qa/runs`
+
+## 6. 与 uploader 并存
+
+| 进程 | 职责 |
+|------|------|
+| log-uploader | 打包上传删源 |
+| log-qa | 预检未上传日志 |
+| API server | 展示报告 |
+
+源日志被 uploader 删除后，自然不再出现在下次 QA 中。这是**上传前预检**，不是 TOS 终验。
+
+## 7. Docker 一键部署
+
+仓库已把 `log-qa` 打进同一镜像，并在 `docker-compose.yml` 中作为独立服务启动。
+
+### 服务器上
+
+```bash
+# 代码目录内
+chmod +x docker-build.sh
+./docker-build.sh
+```
+
+脚本会：
+
+1. 若缺失则从 example 生成 `config.yaml` / `log-uploader.yaml` / `log-qa.yaml` / `.env`
+2. 创建 `logs/`、`auths/`
+3. 选择 1 拉预构建镜像，或 2 本地源码构建
+4. `docker compose up -d` 启动三个服务：`cli-proxy-api`、`log-uploader`、`log-qa`
+
+### 选择说明
+
+| 选项 | 场景 |
+|------|------|
+| **1 预构建镜像** | 镜像 registry 已包含新版 `./log-qa` 二进制时 |
+| **2 源码构建（推荐刚合入 log-qa 后）** | 确保镜像内有 `log-qa`；`CLI_PROXY_IMAGE=cli-proxy-api:local` |
+
+### 部署后检查
+
+```bash
+docker compose ps
+docker compose logs -f log-qa
+
+# 立即跑一轮质检（不等 30 分钟）
+docker compose exec log-qa ./log-qa -config /CLIProxyAPI/log-qa.yaml -once
+
+# 看报告
+ls logs/log-qa/reports/
+```
+
+Management：`http://<服务器IP>:8317/management.html` → 右侧 **LOG QA**。
+
+### 路径约定（Docker）
+
+| 宿主机 | 容器内 |
+|--------|--------|
+| `./logs` | `/CLIProxyAPI/logs` |
+| `./log-qa.yaml` | `/CLIProxyAPI/log-qa.yaml` |
+| 源日志 | `/CLIProxyAPI/logs/keys`（`log-qa.yaml` 的 `logs-root`） |
+| QA 报告 | `/CLIProxyAPI/logs/log-qa`（`work-dir`） |
+
+请保证 **log-uploader 的 `logs-root` 与 log-qa 的 `logs-root` 指向同一目录**，否则预检与上传集合会对不齐。
+
+### 仅重启 QA
+
+```bash
+docker compose up -d log-qa --force-recreate
+```

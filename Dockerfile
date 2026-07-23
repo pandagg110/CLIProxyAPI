@@ -18,6 +18,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
     CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -o ./log-uploader ./cmd/log-uploader/
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -o ./log-qa ./cmd/log-qa/
 
 FROM debian:bookworm
 
@@ -27,6 +29,7 @@ RUN mkdir /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 COPY --from=builder ./app/log-uploader /CLIProxyAPI/log-uploader
+COPY --from=builder ./app/log-qa /CLIProxyAPI/log-qa
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 

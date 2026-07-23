@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 #
-# build.sh - Linux/macOS Build Script
+# docker-build.sh - Linux/macOS one-shot Docker deploy script
 #
-# This script automates the process of building and running the Docker container
-# with version information dynamically injected at build time.
+# Builds (optional) and starts:
+#   - cli-proxy-api      (proxy + Management UI)
+#   - log-uploader       (hourly archive upload to TOS)
+#   - log-qa             (read-only QA for unuploaded local logs)
+#
 
 set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${ROOT_DIR}"
 
 if [[ "${1:-}" != "" ]]; then
   echo "Error: unknown option '${1}'."
@@ -13,26 +19,101 @@ if [[ "${1:-}" != "" ]]; then
   exit 1
 fi
 
-# --- Step 1: Choose Environment ---
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Error: docker is not installed or not on PATH."
+  exit 1
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Error: docker compose is not available. Install Docker Compose v2."
+  exit 1
+fi
+
+ensure_file_from_example() {
+  local target="$1"
+  local example="$2"
+  if [[ -f "${target}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${example}" ]]; then
+    echo "Error: missing ${example}; cannot create ${target}."
+    exit 1
+  fi
+  cp "${example}" "${target}"
+  echo "[prep] created ${target} from ${example}"
+}
+
+# --- Step 0: prepare runtime files ---
+echo "--- Preparing config files ---"
+ensure_file_from_example "config.yaml" "config.example.yaml"
+ensure_file_from_example "log-uploader.yaml" "log-uploader.example.yaml"
+ensure_file_from_example "log-qa.yaml" "log-qa.example.yaml"
+
+if [[ ! -f ".env" ]]; then
+  cat > .env <<'EOF'
+# Optional environment for docker compose
+# VOLC_TOS_ACCESS_KEY_ID=
+# VOLC_TOS_SECRET_ACCESS_KEY=
+# TOS_ACCESS_KEY_ID=
+# TOS_SECRET_ACCESS_KEY=
+EOF
+  echo "[prep] created empty .env (fill TOS keys before enabling uploader upload)"
+fi
+
+mkdir -p logs auths
+
+echo
 echo "Please select an option:"
 echo "1) Run using Pre-built Image (Recommended)"
 echo "2) Build from Source and Run (For Developers)"
 read -r -p "Enter choice [1-2]: " choice
 
-# --- Step 2: Execute based on choice ---
+start_services() {
+  local mode="$1"
+  if [[ "${mode}" == "prebuilt" ]]; then
+    docker compose up -d --remove-orphans --no-build
+  else
+    docker compose up -d --remove-orphans --pull never
+  fi
+}
+
+print_status() {
+  echo
+  echo "========================================"
+  echo "  Deploy complete"
+  echo "========================================"
+  echo "Services:"
+  echo "  - cli-proxy-api         proxy + Management UI"
+  echo "  - log-uploader          hourly upload to TOS"
+  echo "  - log-qa                local unuploaded log QA"
+  echo
+  echo "Useful commands:"
+  echo "  docker compose ps"
+  echo "  docker compose logs -f log-qa"
+  echo "  docker compose logs -f log-uploader"
+  echo "  docker compose logs -f cli-proxy-api"
+  echo
+  echo "Management UI:  http://<server-ip>:8317/management.html"
+  echo "Log QA panel:   open Management, then click the right-side LOG QA button"
+  echo
+  echo "QA reports dir (host): ./logs/log-qa/reports/"
+  echo "One-shot QA now:       docker compose exec log-qa ./log-qa -config /CLIProxyAPI/log-qa.yaml -once"
+  echo
+  docker compose ps
+}
+
 case "$choice" in
   1)
     echo "--- Running with Pre-built Image ---"
-    docker compose up -d --remove-orphans --no-build
-    echo "Services are starting from remote image."
-    echo "Run 'docker compose logs -f' to see the logs."
+    echo "Note: remote image must include ./log-qa binary. If pull is old, use option 2."
+    start_services prebuilt
+    print_status
     ;;
   2)
     echo "--- Building from Source and Running ---"
 
-    # Get Version Information
-    VERSION="$(git describe --tags --always --dirty)"
-    COMMIT="$(git rev-parse --short HEAD)"
+    VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+    COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
     BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     echo "Building with the following info:"
@@ -41,21 +122,18 @@ case "$choice" in
     echo "  Build Date: ${BUILD_DATE}"
     echo "----------------------------------------"
 
-    # Build and start the services with a local-only image tag
     export CLI_PROXY_IMAGE="cli-proxy-api:local"
     export DOCKER_BUILDKIT=1
 
-    echo "Building the Docker image..."
+    echo "Building the Docker image (includes CLIProxyAPI, log-uploader, log-qa)..."
     docker compose build \
       --build-arg VERSION="${VERSION}" \
       --build-arg COMMIT="${COMMIT}" \
       --build-arg BUILD_DATE="${BUILD_DATE}"
 
     echo "Starting the services..."
-    docker compose up -d --remove-orphans --pull never
-
-    echo "Build complete. Services are starting."
-    echo "Run 'docker compose logs -f' to see the logs."
+    start_services local
+    print_status
     ;;
   *)
     echo "Invalid choice. Please enter 1 or 2."
