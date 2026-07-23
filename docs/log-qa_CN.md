@@ -92,6 +92,7 @@ work-dir/
 
 - 合格率、会话数、失败原因分布
 - 失败 session 列表（可筛选）
+- **标题**：优先取 Codex 标题生成轮次（`request_kind` 含 title）响应中的短标题；若标题日志已被 uploader 删掉，则回退为首条有效用户提问预览，便于在 Codex 里对照
 
 API（需 management 鉴权）：
 

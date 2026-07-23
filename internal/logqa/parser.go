@@ -72,6 +72,10 @@ func parseLogFile(logsRoot, path string, info os.FileInfo, location *time.Locati
 	rec.DupAssistant = metrics.DupAssistant
 	rec.SamplePrompts = metrics.SamplePrompts
 	rec.AssistantTexts = metrics.AssistantTexts
+	if title, source := resolveRequestTitle(rec.RequestKind, input, text); title != "" {
+		rec.Title = title
+		rec.TitleSource = source
+	}
 
 	if rec.SessionID == "" {
 		if rec.ThreadID != "" {

@@ -2,6 +2,7 @@ package logqa
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,6 +115,67 @@ func TestPickSnapshotFallbackToCompactionOnly(t *testing.T) {
 	})
 	if got.SourceFile != "k/c2.log" || got.ToolCalls != 90 {
 		t.Fatalf("unexpected fallback snapshot: %+v", got)
+	}
+}
+
+func TestExtractTitleFromTitleGenerationSSE(t *testing.T) {
+	t.Parallel()
+	logText := `=== REQUEST BODY ===
+{"input":[{"type":"message","role":"user","content":"Please generate a title for this chat"}]}
+
+=== RESPONSE ===
+Status: 200
+Content-Type: text/event-stream
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","text":"Pulse Relay rhythm game","output_index":0}
+
+event: response.completed
+data: {"type":"response.completed","response":{"output":[]}}
+`
+	input := []any{
+		map[string]any{"type": "message", "role": "user", "content": "Please generate a title for this chat"},
+	}
+	title, source := resolveRequestTitle("title", input, logText)
+	if title != "Pulse Relay rhythm game" || source != titleSourceCodex {
+		t.Fatalf("title=%q source=%q", title, source)
+	}
+}
+
+func TestPickSessionTitleFallsBackToUserPrompt(t *testing.T) {
+	t.Parallel()
+	title, source := pickSessionTitle([]RequestRecord{
+		{
+			SessionID:     "s1",
+			Timestamp:     time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC),
+			SamplePrompts: []string{"请开发网页节奏游戏 Pulse Relay"},
+		},
+	})
+	if source != titleSourceUser {
+		t.Fatalf("source=%q", source)
+	}
+	if !strings.Contains(title, "Pulse Relay") {
+		t.Fatalf("title=%q", title)
+	}
+}
+
+func TestPickSessionTitlePrefersCodexTitle(t *testing.T) {
+	t.Parallel()
+	title, source := pickSessionTitle([]RequestRecord{
+		{
+			SessionID:     "s1",
+			Timestamp:     time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC),
+			SamplePrompts: []string{"long user task ..."},
+		},
+		{
+			SessionID:   "s1",
+			Timestamp:   time.Date(2026, 7, 23, 10, 1, 0, 0, time.UTC),
+			Title:       "Pulse Relay",
+			TitleSource: titleSourceCodex,
+		},
+	})
+	if title != "Pulse Relay" || source != titleSourceCodex {
+		t.Fatalf("title=%q source=%q", title, source)
 	}
 }
 

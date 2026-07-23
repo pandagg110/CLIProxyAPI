@@ -529,6 +529,9 @@ func sessionMatchesQuery(rec logqa.SessionRecord, q string) bool {
 	if strings.Contains(strings.ToLower(rec.SessionID), q) {
 		return true
 	}
+	if strings.Contains(strings.ToLower(rec.Title), q) {
+		return true
+	}
 	for _, t := range rec.ThreadIDs {
 		if strings.Contains(strings.ToLower(t), q) {
 			return true
@@ -536,6 +539,11 @@ func sessionMatchesQuery(rec logqa.SessionRecord, q string) bool {
 	}
 	for _, k := range rec.KeyNames {
 		if strings.Contains(strings.ToLower(k), q) {
+			return true
+		}
+	}
+	for _, p := range rec.SamplePrompts {
+		if strings.Contains(strings.ToLower(p), q) {
 			return true
 		}
 	}

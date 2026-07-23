@@ -695,7 +695,7 @@
     });
     var search = document.createElement('input');
     search.type = 'search';
-    search.placeholder = '会话 / Key';
+    search.placeholder = '会话 / 标题 / Key';
     search.value = ui.query || '';
     search.addEventListener('change', function () {
       ui.query = search.value;
@@ -709,7 +709,7 @@
     var table = element('table', 'cpa-lqa-table');
     var thead = document.createElement('thead');
     var headRow = document.createElement('tr');
-    ;['状态', '会话 ID', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key', '操作'].forEach(function (h) {
+    ;['状态', '会话 ID', '标题', '提问轮次', '工具调用', '重复回复', '失败原因', 'Key', '操作'].forEach(function (h) {
       headRow.appendChild(element('th', '', h));
     });
     thead.appendChild(headRow);
@@ -719,7 +719,7 @@
     if (!sessions.length) {
       var emptyRow = document.createElement('tr');
       var td = element('td', '', '当前筛选条件下无会话');
-      td.colSpan = 8;
+      td.colSpan = 9;
       emptyRow.appendChild(td);
       tbody.appendChild(emptyRow);
     }
@@ -727,6 +727,19 @@
       var tr = document.createElement('tr');
       tr.appendChild(element('td', row.ok ? 'cpa-lqa-pass' : 'cpa-lqa-fail', row.ok ? '通过' : '失败'));
       tr.appendChild(element('td', 'cpa-lqa-mono', row.session_id || ''));
+      var titleCell = element('td', '', row.title || '-');
+      if (row.title_source === 'user_prompt') {
+        titleCell.title = '未找到 Codex 标题生成结果，回退为首条有效用户提问';
+      } else if (row.title_source === 'codex_title') {
+        titleCell.title = '来自 Codex 会话标题生成请求';
+      }
+      if (row.title) {
+        titleCell.style.maxWidth = '220px';
+        titleCell.style.overflow = 'hidden';
+        titleCell.style.textOverflow = 'ellipsis';
+        titleCell.style.whiteSpace = 'nowrap';
+      }
+      tr.appendChild(titleCell);
       tr.appendChild(element('td', '', String(row.prompt_rounds)));
       tr.appendChild(element('td', '', String(row.tool_calls)));
       tr.appendChild(element('td', '', String(row.dup_assistant_groups)));

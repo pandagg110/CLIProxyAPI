@@ -73,6 +73,8 @@ func fileStateFromRequest(rec RequestRecord, now time.Time) FileState {
 		KeyName:       rec.KeyName,
 		RequestKind:   rec.RequestKind,
 		SamplePrompts: rec.SamplePrompts,
+		Title:         rec.Title,
+		TitleSource:   rec.TitleSource,
 		ModTime:       rec.ModTime,
 		SizeBytes:     rec.SizeBytes,
 	}
@@ -94,6 +96,8 @@ func requestFromFileState(fp string, st FileState) RequestRecord {
 		ToolCalls:     st.ToolCalls,
 		DupAssistant:  st.DupAssistant,
 		SamplePrompts: st.SamplePrompts,
+		Title:         st.Title,
+		TitleSource:   st.TitleSource,
 		ParseError:    st.ParseError,
 	}
 }

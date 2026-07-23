@@ -18,14 +18,22 @@ type RequestRecord struct {
 	ToolCalls     int       `json:"tool_calls"`
 	DupAssistant  int       `json:"dup_assistant_groups"`
 	SamplePrompts []string  `json:"sample_prompts,omitempty"`
-	ParseError    string    `json:"parse_error,omitempty"`
+	// Title is best-effort Codex thread title (from title-generation turns) or empty.
+	Title string `json:"title,omitempty"`
+	// TitleSource: "codex_title" | "user_prompt" | "".
+	TitleSource string `json:"title_source,omitempty"`
+	ParseError  string `json:"parse_error,omitempty"`
 	// AssistantTexts kept only in memory during aggregation, not always serialized.
 	AssistantTexts []string `json:"-"`
 }
 
 // SessionRecord is the session-level QA verdict.
 type SessionRecord struct {
-	SessionID          string    `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// Title is the Codex-side thread title when recoverable; otherwise a short
+	// first-user-prompt preview so operators can match the conversation in the UI.
+	Title              string    `json:"title,omitempty"`
+	TitleSource        string    `json:"title_source,omitempty"` // codex_title | user_prompt
 	ThreadIDs          []string  `json:"thread_ids,omitempty"`
 	KeyNames           []string  `json:"key_names,omitempty"`
 	PromptRounds       int       `json:"prompt_rounds"`
@@ -88,6 +96,8 @@ type FileState struct {
 	KeyName       string    `json:"key_name"`
 	RequestKind   string    `json:"request_kind,omitempty"`
 	SamplePrompts []string  `json:"sample_prompts,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	TitleSource   string    `json:"title_source,omitempty"`
 	// Note: assistant texts not persisted (can be large); re-scan on rule changes.
 	// For unchanged files we re-use stored numeric metrics only when re-aggregating
 	// from state — but rule 3 needs assistant texts. Unchanged files still need

@@ -67,9 +67,12 @@ func AggregateSessions(requests []RequestRecord, rules RulesConfig) []SessionRec
 		threads := sortedKeys(threadSet)
 		keys := sortedKeys(keySet)
 		sort.Strings(files)
+		title, titleSource := pickSessionTitle(g.requests)
 
 		sessions = append(sessions, SessionRecord{
 			SessionID:          sid,
+			Title:              title,
+			TitleSource:        titleSource,
 			ThreadIDs:          threads,
 			KeyNames:           keys,
 			PromptRounds:       snapshot.PromptRounds,
