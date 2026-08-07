@@ -93,7 +93,7 @@ Deno.test("migration enables RLS, revokes direct reads, and grants only intended
   );
 });
 
-Deno.test("ingest SQL validates strict fields, sensitive values, timezone dates, sums, uniqueness, and bigint ranges", async () => {
+Deno.test("ingest migration source declares strict validation and bigint ranges", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
   assert.match(
@@ -127,7 +127,7 @@ Deno.test("ingest SQL validates strict fields, sensitive values, timezone dates,
   assert.match(sql, /jsonb_build_object\('status', 'inserted'/);
 });
 
-Deno.test("public daily SQL hides test rows after live data and returns the public cell contract", async () => {
+Deno.test("public daily migration source declares live filtering and the cell contract", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
   assert.match(
@@ -168,6 +168,35 @@ Deno.test("public daily SQL hides test rows after live data and returns the publ
   ) {
     assert.ok(sql.includes(`'${key}'`), `missing response key: ${key}`);
   }
+  for (
+    const field of ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"]
+  ) {
+    assert.match(
+      sql,
+      new RegExp(`'${field}', cells\\.${field}::text`),
+      `${field} must be serialized as exact decimal text`,
+    );
+  }
+  assert.match(
+    sql,
+    /offset \(\(p_page::bigint - 1::bigint\) \* p_page_size::bigint\)/,
+  );
+});
+
+Deno.test("public daily response example preserves exact byte strings", async () => {
+  const example = JSON.parse(await read("examples/daily-response.json"));
+  const cell = example.cells[0];
+
+  assert.equal(cell.jsonl_bytes, "9007199254740993");
+  for (
+    const field of ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"]
+  ) {
+    assert.equal(typeof cell[field], "string");
+  }
+  assert.equal(typeof cell.batch_count, "number");
+  assert.equal(typeof example.pagination.page, "number");
+  assert.equal(typeof example.pagination.page_size, "number");
+  assert.equal(typeof example.pagination.total, "number");
 });
 
 Deno.test("seed is deterministic test data with a seven-day query range and a full missing event date", async () => {
@@ -202,7 +231,7 @@ Deno.test("seed is deterministic test data with a seven-day query range and a fu
   );
 });
 
-Deno.test("runnable SQL assertions cover behavior and privileges", async () => {
+Deno.test("SQL assertion source declares behavior and privilege coverage", async () => {
   const assertions = compact(await read("tests/log_usage_assertions.sql"));
 
   assert.match(assertions, /begin;/);
@@ -228,4 +257,7 @@ Deno.test("runnable SQL assertions cover behavior and privileges", async () => {
   assert.match(assertions, /gpt_bytes/);
   assert.match(assertions, /claude_bytes/);
   assert.match(assertions, /grok_bytes/);
+  assert.match(assertions, /2147483647/);
+  assert.match(assertions, /9007199254740993/);
+  assert.match(assertions, /literal search failed/);
 });

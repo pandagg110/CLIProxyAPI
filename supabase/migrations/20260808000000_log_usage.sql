@@ -533,7 +533,20 @@ begin
     from public.log_upload_usage as u
     join eligible_batches as b on b.event_id = u.event_id
     where b.usage_date between p_from and p_to
-      and (_search = '' or u.key_name ilike '%' || _search || '%')
+      and (
+        _search = ''
+        or u.key_name ilike (
+          '%' ||
+          pg_catalog.replace(
+            pg_catalog.replace(
+              pg_catalog.replace(_search, E'\\', E'\\\\'),
+              '%', E'\\%'
+            ),
+            '_', E'\\_'
+          ) ||
+          '%'
+        ) escape E'\\'
+      )
     group by u.key_name
   ),
   paged_names as (
@@ -546,7 +559,7 @@ begin
     from name_totals as names
     order by names.total_jsonl_bytes desc, names.key_name
     limit p_page_size
-    offset ((p_page - 1)::bigint * p_page_size::bigint)
+    offset ((p_page::bigint - 1::bigint) * p_page_size::bigint)
   ),
   day_values as (
     select series.value::date as usage_date
@@ -611,10 +624,10 @@ begin
           pg_catalog.jsonb_build_object(
             'date', cells.usage_date,
             'key_name', cells.key_name,
-            'jsonl_bytes', cells.jsonl_bytes,
-            'gpt_bytes', cells.gpt_bytes,
-            'claude_bytes', cells.claude_bytes,
-            'grok_bytes', cells.grok_bytes,
+            'jsonl_bytes', cells.jsonl_bytes::text,
+            'gpt_bytes', cells.gpt_bytes::text,
+            'claude_bytes', cells.claude_bytes::text,
+            'grok_bytes', cells.grok_bytes::text,
             'batch_count', cells.batch_count
           )
           order by cells.usage_date, cells.ordinal

@@ -1,0 +1,29 @@
+{
+  "timezone": "Asia/Shanghai",
+  "from": "2026-08-08",
+  "to": "2026-08-08",
+  "using_test_data": false,
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1
+  },
+  "names": [
+    "张三"
+  ],
+  "days": [
+    "2026-08-08"
+  ],
+  "cells": [
+    {
+      "date": "2026-08-08",
+      "key_name": "张三",
+      "jsonl_bytes": "9007199254740993",
+      "gpt_bytes": "9007199254740993",
+      "claude_bytes": "0",
+      "grok_bytes": "0",
+      "batch_count": 2
+    }
+  ],
+  "latest_sync_at": "2026-08-08T00:00:00Z"
+}

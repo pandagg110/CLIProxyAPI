@@ -81,8 +81,9 @@ be overwritten by the frontend build.
 optional query parameters are:
 
 - `from=YYYY-MM-DD` and `to=YYYY-MM-DD`: required, inclusive, maximum 366 days.
-- `search`: optional name substring, maximum 100 characters.
-- `page`: optional integer greater than or equal to 1; default `1`.
+- `search`: optional case-insensitive literal name substring, maximum 100
+  characters.
+- `page`: optional integer from 1 to 2147483647; default `1`.
 - `page_size`: optional integer from 1 to 20; default `20`.
 
 The compact response contains `timezone`, `from`, `to`, `using_test_data`,
@@ -93,6 +94,12 @@ contains `date`, `key_name`, total `jsonl_bytes`, provider totals `gpt_bytes`,
 `claude_bytes`, and `grok_bytes`, plus `batch_count`, which counts distinct
 events for that name/date. Recorded all-zero cells are retained; a date with no
 event has no cell entry while remaining present in `days`.
+
+The four byte-total fields are base-10 JSON strings so values above JavaScript's
+safe-integer limit remain exact. `batch_count` and all `pagination` fields
+remain JSON numbers. Ingest request byte fields remain safe-integer JSON
+numbers. See [`examples/daily-response.json`](examples/daily-response.json) for
+a complete public response example.
 
 The database applies a global live-data switch. While no batch stored with the
 internal `is_test=false` value exists, the public RPC shows synthetic rows. As
@@ -128,13 +135,16 @@ psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
   -f supabase/tests/log_usage_assertions.sql
 ```
 
-The SQL assertion script runs in a transaction and rolls back its own test rows.
-`seed.sql` deterministically creates synthetic `test_mode=true` events for the
-dashboard range `2026-08-01` through `2026-08-07`. It covers 张三, 李四, and
-王五 across all three providers, includes an explicit zero cell, and
-intentionally omits the entire `2026-08-04` event date while `days` still
-returns all seven dates. Nonzero JSONL byte values span multiple orders of
-magnitude.
+The Deno backend contract tests inspect migration and assertion source
+contracts; they do not execute PostgreSQL. The `psql` command is required
+runtime validation for migrations, privileges, pagination, exact aggregates, and
+search behavior. The SQL assertion script runs in a transaction and rolls back
+its own test rows. `seed.sql` deterministically creates synthetic
+`test_mode=true` events for the dashboard range `2026-08-01` through
+`2026-08-07`. It covers 张三, 李四, and 王五 across all three providers,
+includes an explicit zero cell, and intentionally omits the entire `2026-08-04`
+event date while `days` still returns all seven dates. Nonzero JSONL byte values
+span multiple orders of magnitude.
 
 ## Deployment
 

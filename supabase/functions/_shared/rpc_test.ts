@@ -51,3 +51,33 @@ Deno.test("callSupabaseRpc returns structured PostgREST errors", async () => {
     error: { code: "22023", message: "validation_error: bad payload" },
   });
 });
+
+Deno.test("callSupabaseRpc preserves decimal-string byte totals", async () => {
+  const result = await callSupabaseRpc(
+    {
+      url: "https://project.supabase.co",
+      key: "anon-key",
+      functionName: "get_public_daily_usage",
+      args: {},
+    },
+    () =>
+      Promise.resolve(
+        new Response(
+          '{"cells":[{"jsonl_bytes":"9007199254740993","gpt_bytes":"9007199254740993","claude_bytes":"0","grok_bytes":"0"}]}',
+          { headers: { "content-type": "application/json" } },
+        ),
+      ),
+  );
+
+  assert.deepEqual(result, {
+    data: {
+      cells: [{
+        jsonl_bytes: "9007199254740993",
+        gpt_bytes: "9007199254740993",
+        claude_bytes: "0",
+        grok_bytes: "0",
+      }],
+    },
+    error: null,
+  });
+});

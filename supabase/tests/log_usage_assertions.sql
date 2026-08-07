@@ -174,6 +174,7 @@ declare
   live_payload jsonb;
   result jsonb;
   daily jsonb;
+  max_page_daily jsonb;
   cell jsonb;
   rejected_value text := 'do-not-echo-this-secret';
   bad_object_key text;
@@ -181,6 +182,8 @@ declare
   error_message text;
   bad_event_id text;
   bad_target_id text;
+  search_term text;
+  expected_search_name text;
   conflict_seen boolean := false;
   validation_seen boolean := false;
   rejection_seen boolean := false;
@@ -574,6 +577,18 @@ begin
   if daily -> 'pagination' <> '{"page": 1, "page_size": 20, "total": 3}'::jsonb then
     raise exception 'pagination metadata is incorrect: %', daily;
   end if;
+  max_page_daily := public.get_public_daily_usage(
+    date '2026-01-01',
+    date '2026-01-02',
+    '',
+    2147483647,
+    20
+  );
+  if max_page_daily #>> '{pagination,page}' is distinct from '2147483647'
+    or max_page_daily -> 'names' is distinct from '[]'::jsonb
+    or max_page_daily -> 'cells' is distinct from '[]'::jsonb then
+    raise exception 'maximum page overflowed or returned data: %', max_page_daily;
+  end if;
   if daily -> 'days' <> '["2026-01-01", "2026-01-02"]'::jsonb then
     raise exception 'dashboard days do not include the full range: %', daily;
   end if;
@@ -588,11 +603,11 @@ begin
   where values.value ->> 'key_name' = 'sql-test'
     and values.value ->> 'date' = '2026-01-01';
   if cell is null
-    or cell ->> 'jsonl_bytes' <> '650'
-    or cell ->> 'gpt_bytes' <> '150'
-    or cell ->> 'claude_bytes' <> '200'
-    or cell ->> 'grok_bytes' <> '300'
-    or cell ->> 'batch_count' <> '2' then
+    or cell -> 'jsonl_bytes' is distinct from '"650"'::jsonb
+    or cell -> 'gpt_bytes' is distinct from '"150"'::jsonb
+    or cell -> 'claude_bytes' is distinct from '"200"'::jsonb
+    or cell -> 'grok_bytes' is distinct from '"300"'::jsonb
+    or cell -> 'batch_count' is distinct from '2'::jsonb then
     raise exception 'provider totals or distinct batch count are incorrect: %', daily;
   end if;
   if cell ? 'name' or not cell ?& array[
@@ -619,17 +634,21 @@ begin
     'usage_date', '2026-01-03',
     'source_count', 0,
     'source_bytes', 0,
-    'jsonl_bytes', 5000000000000000000,
+    'jsonl_bytes', 4503599627370497,
     'compressed_bytes', 0,
     'test_mode', true,
     'usage', pg_catalog.jsonb_build_array(
-      pg_catalog.jsonb_build_object('key_name', 'sql-large-total', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 5000000000000000000)
+      pg_catalog.jsonb_build_object('key_name', 'sql-large-total', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 4503599627370497)
     )
   );
   perform public.ingest_log_usage_v1(large_payload, pg_catalog.repeat('8', 64));
   large_payload := large_payload || pg_catalog.jsonb_build_object(
     'event_id', 'sql-assert-large-2',
-    'object_key', 'assertions/large-2.jsonl.zst'
+    'object_key', 'assertions/large-2.jsonl.zst',
+    'jsonl_bytes', 4503599627370496,
+    'usage', pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('key_name', 'sql-large-total', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 4503599627370496)
+    )
   );
   perform public.ingest_log_usage_v1(large_payload, pg_catalog.repeat('9', 64));
 
@@ -644,11 +663,55 @@ begin
   into cell
   from pg_catalog.jsonb_array_elements(daily -> 'cells') as values(value)
   where values.value ->> 'key_name' = 'sql-large-total';
-  if cell ->> 'jsonl_bytes' <> '10000000000000000000'
-    or cell ->> 'gpt_bytes' <> '10000000000000000000'
-    or cell ->> 'batch_count' <> '2' then
-    raise exception 'public aggregates overflowed bigint: %', daily;
+  if cell -> 'jsonl_bytes' is distinct from '"9007199254740993"'::jsonb
+    or cell -> 'gpt_bytes' is distinct from '"9007199254740993"'::jsonb
+    or cell -> 'claude_bytes' is distinct from '"0"'::jsonb
+    or cell -> 'grok_bytes' is distinct from '"0"'::jsonb
+    or cell -> 'batch_count' is distinct from '2'::jsonb then
+    raise exception 'public aggregates lost exact decimal precision: %', daily;
   end if;
+
+  perform public.ingest_log_usage_v1(
+    test_payload || pg_catalog.jsonb_build_object(
+      'event_id', 'sql-assert-search',
+      'object_key', 'assertions/search.jsonl.zst',
+      'hour_start', '2026-01-04T00:00:00Z',
+      'timezone', 'UTC',
+      'usage_date', '2026-01-04',
+      'source_count', 0,
+      'source_bytes', 0,
+      'jsonl_bytes', 0,
+      'compressed_bytes', 0,
+      'usage', pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object('key_name', 'sql-search-percent%', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 0),
+        pg_catalog.jsonb_build_object('key_name', 'sql-search-underscore_', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 0),
+        pg_catalog.jsonb_build_object('key_name', E'sql-search-backslash\\', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 0),
+        pg_catalog.jsonb_build_object('key_name', 'sql-search-plain', 'provider', 'codex', 'source_count', 0, 'source_bytes', 0, 'jsonl_bytes', 0)
+      )
+    ),
+    pg_catalog.repeat('0', 64)
+  );
+
+  for search_term, expected_search_name in
+    select cases.search_term, cases.expected_name
+    from (values
+      ('%', 'sql-search-percent%'),
+      ('_', 'sql-search-underscore_'),
+      (E'\\', E'sql-search-backslash\\')
+    ) as cases(search_term, expected_name)
+  loop
+    daily := public.get_public_daily_usage(
+      date '2026-01-04',
+      date '2026-01-04',
+      search_term,
+      1,
+      20
+    );
+    if daily #>> '{pagination,total}' is distinct from '1'
+      or daily -> 'names' is distinct from pg_catalog.jsonb_build_array(expected_search_name) then
+      raise exception 'literal search failed for %: %', search_term, daily;
+    end if;
+  end loop;
 
   live_payload := pg_catalog.jsonb_build_object(
     'schema_version', 1,
@@ -693,7 +756,7 @@ begin
     raise exception 'test rows were not hidden after live ingestion: %', daily;
   end if;
   if daily #>> '{pagination,total}' <> '1'
-    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","jsonl_bytes":400,"batch_count":1}]'::jsonb then
+    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","jsonl_bytes":"400","batch_count":1}]'::jsonb then
     raise exception 'live public response is incorrect: %', daily;
   end if;
 end;

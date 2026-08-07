@@ -361,6 +361,19 @@ Deno.test("parseDailyQuery accepts an inclusive 366-day range and defaults pagin
   });
 });
 
+Deno.test("parseDailyQuery accepts the maximum PostgreSQL integer page", () => {
+  const result = parseDailyQuery(
+    new URL(
+      "https://example.test/?api=daily&from=2026-03-01&to=2026-03-02&page=2147483647",
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.page, 2_147_483_647);
+  }
+});
+
 Deno.test("parseDailyQuery rejects invalid dates, ranges, pages, and page sizes", () => {
   const cases = [
     [
@@ -371,7 +384,11 @@ Deno.test("parseDailyQuery rejects invalid dates, ranges, pages, and page sizes"
     ["from=2025-01-01&to=2026-01-02", "date range must not exceed 366 days"],
     [
       "from=2026-03-01&to=2026-03-02&page=0",
-      "page must be an integer greater than or equal to 1",
+      "page must be an integer from 1 to 2147483647",
+    ],
+    [
+      "from=2026-03-01&to=2026-03-02&page=2147483648",
+      "page must be an integer from 1 to 2147483647",
     ],
     [
       "from=2026-03-01&to=2026-03-02&page_size=21",

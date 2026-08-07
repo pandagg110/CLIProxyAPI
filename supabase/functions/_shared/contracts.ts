@@ -36,10 +36,10 @@ export interface IngestRpcResponse {
 export interface DailyUsageCell {
   date: string;
   key_name: string;
-  jsonl_bytes: number;
-  gpt_bytes: number;
-  claude_bytes: number;
-  grok_bytes: number;
+  jsonl_bytes: string;
+  gpt_bytes: string;
+  claude_bytes: string;
+  grok_bytes: string;
   batch_count: number;
 }
 
@@ -70,6 +70,8 @@ export interface DailyQuery {
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
+
+const MAX_PAGE = 2_147_483_647;
 
 const ingestPayloadFields = new Set([
   "schema_version",
@@ -526,12 +528,12 @@ export function parseDailyQuery(url: URL): ValidationResult<DailyQuery> {
     url.searchParams.get("page"),
     1,
     1,
-    Number.MAX_SAFE_INTEGER,
+    MAX_PAGE,
   );
   if (page === null) {
     return {
       ok: false,
-      error: "page must be an integer greater than or equal to 1",
+      error: `page must be an integer from 1 to ${MAX_PAGE}`,
     };
   }
   const pageSize = parsePositiveInteger(

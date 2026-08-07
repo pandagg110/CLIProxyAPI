@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import type { PublicDailyUsageResponse } from "../_shared/contracts.ts";
 import { createDashboardHandler } from "./index.ts";
 
 function env(name: string): string | undefined {
@@ -37,6 +38,7 @@ Deno.test("dashboard handler rejects invalid daily range and pagination before R
   const invalidUrls = [
     "?api=daily&from=2025-01-01&to=2026-01-02",
     "?api=daily&from=2026-08-01&to=2026-08-02&page=0",
+    "?api=daily&from=2026-08-01&to=2026-08-02&page=2147483648",
     "?api=daily&from=2026-08-01&to=2026-08-02&page_size=21",
   ];
 
@@ -49,7 +51,7 @@ Deno.test("dashboard handler rejects invalid daily range and pagination before R
 });
 
 Deno.test("dashboard handler calls the anon RPC and returns the compact daily shape", async () => {
-  const payload = {
+  const payload: PublicDailyUsageResponse = {
     timezone: "Asia/Shanghai",
     from: "2026-08-01",
     to: "2026-08-02",
@@ -64,10 +66,10 @@ Deno.test("dashboard handler calls the anon RPC and returns the compact daily sh
     cells: [{
       date: "2026-08-01",
       key_name: "张三",
-      jsonl_bytes: 120,
-      gpt_bytes: 120,
-      claude_bytes: 0,
-      grok_bytes: 0,
+      jsonl_bytes: "9007199254740993",
+      gpt_bytes: "9007199254740993",
+      claude_bytes: "0",
+      grok_bytes: "0",
       batch_count: 1,
     }],
     latest_sync_at: "2026-08-08T00:00:00Z",
