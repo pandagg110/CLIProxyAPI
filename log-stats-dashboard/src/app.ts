@@ -24,6 +24,8 @@ function pageCount(total: number): number {
   return Math.max(1, Math.ceil(total / 5));
 }
 
+export type DailyFetcher = (query: DashboardQuery, signal?: AbortSignal) => Promise<DailyUsageResponse>;
+
 export class DashboardApp {
   private query: DashboardQuery;
   private data: DailyUsageResponse | null = null;
@@ -33,7 +35,10 @@ export class DashboardApp {
   private controller: AbortController | null = null;
   private previousFocus: HTMLElement | null = null;
 
-  constructor(private readonly root: HTMLElement) {
+  constructor(
+    private readonly root: HTMLElement,
+    private readonly fetcher: DailyFetcher = fetchDailyUsage,
+  ) {
     this.query = parseDashboardQuery(window.location.search, localToday());
   }
 
@@ -69,24 +74,28 @@ export class DashboardApp {
 
   private async load(): Promise<void> {
     this.controller?.abort();
-    this.controller = new AbortController();
+    const controller = new AbortController();
+    const query = { ...this.query };
+    this.controller = controller;
     this.loading = true;
     this.failed = false;
     this.render();
     try {
-      const data = await fetchDailyUsage(this.query, this.controller.signal);
+      const data = await this.fetcher(query, controller.signal);
+      if (this.controller !== controller) return;
       this.data = data;
       this.failed = false;
       const lastPage = pageCount(data.pagination.total);
-      if (data.pagination.total > 0 && this.query.page > lastPage) {
+      if (data.pagination.total > 0 && query.page > lastPage) {
         this.updateQuery({ ...this.query, page: lastPage });
         return;
       }
     } catch (error) {
+      if (this.controller !== controller) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       this.failed = true;
     } finally {
-      if (!this.controller?.signal.aborted) {
+      if (this.controller === controller) {
         this.loading = false;
         this.render();
       }

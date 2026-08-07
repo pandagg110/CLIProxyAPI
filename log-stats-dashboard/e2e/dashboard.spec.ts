@@ -1,24 +1,34 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-const cell = {
-  date: "2026-08-08",
-  key_name: "运营一组",
-  jsonl_bytes: "9007199254740993",
-  gpt_bytes: "9007199254740000",
-  claude_bytes: "993",
-  grok_bytes: "0",
-  batch_count: 2,
-};
+function dateRange(from: string, to: string): string[] {
+  const result: string[] = [];
+  for (let cursor = Date.parse(`${from}T00:00:00Z`); cursor <= Date.parse(`${to}T00:00:00Z`); cursor += 86_400_000) {
+    result.push(new Date(cursor).toISOString().slice(0, 10));
+  }
+  return result;
+}
 
-function response(overrides: Record<string, unknown> = {}) {
+function response(url: URL, overrides: Record<string, unknown> = {}) {
+  const from = url.searchParams.get("from")!;
+  const to = url.searchParams.get("to")!;
+  const page = Number(url.searchParams.get("page"));
+  const cell = {
+    date: to,
+    key_name: "运营一组",
+    jsonl_bytes: "9007199254740993",
+    gpt_bytes: "9007199254740000",
+    claude_bytes: "993",
+    grok_bytes: "0",
+    batch_count: 2,
+  };
   return {
     timezone: "Asia/Hong_Kong",
-    from: "2026-08-02",
-    to: "2026-08-08",
+    from,
+    to,
     using_test_data: false,
-    pagination: { page: 1, page_size: 5, total: 6 },
+    pagination: { page, page_size: 5, total: 6 },
     names: ["运营一组", "运营二组", "研发", "客服", "市场"],
-    days: ["2026-08-08", "2026-08-07", "2026-08-06", "2026-08-05", "2026-08-04", "2026-08-03", "2026-08-02"],
+    days: dateRange(from, to),
     cells: [cell, { ...cell, key_name: "运营二组", jsonl_bytes: "0", gpt_bytes: "0", claude_bytes: "0" }],
     latest_sync_at: "2026-08-08T03:00:00Z",
     ...overrides,
@@ -26,7 +36,7 @@ function response(overrides: Record<string, unknown> = {}) {
 }
 
 async function mockDaily(page: Page, responder: (url: URL, route: Route) => Promise<void> | void = async (_url, route) => {
-  await route.fulfill({ json: response() });
+  await route.fulfill({ json: response(_url) });
 }) {
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -42,7 +52,7 @@ test("shows the initial seven-day semantic matrix with exact bytes", async ({ pa
   let requested: URL | undefined;
   await mockDaily(page, async (url, route) => {
     requested = url;
-    await route.fulfill({ json: response() });
+    await route.fulfill({ json: response(url) });
   });
   await page.goto("/");
 
@@ -69,14 +79,21 @@ test("persists thirty-day and custom ranges in the URL", async ({ page }) => {
   url = new URL(page.url());
   expect(url.searchParams.get("from")).toBe("2026-01-01");
   expect(url.searchParams.get("to")).toBe("2026-02-15");
+  await page.goBack();
+  await expect.poll(() => {
+    const current = new URL(page.url());
+    return (Date.parse(`${current.searchParams.get("to")}T00:00:00Z`) - Date.parse(`${current.searchParams.get("from")}T00:00:00Z`)) / 86_400_000 + 1;
+  }).toBe(30);
+  await page.goForward();
+  await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBe("2026-01-01");
 });
 
 test("persists search and moves through five-name pages", async ({ page }) => {
   await mockDaily(page, async (url, route) => {
     const requestedPage = Number(url.searchParams.get("page"));
-    await route.fulfill({ json: response({
+    await route.fulfill({ json: response(url, {
       pagination: { page: requestedPage, page_size: 5, total: 6 },
-      names: requestedPage === 2 ? ["财务"] : response().names,
+      names: requestedPage === 2 ? ["财务"] : response(url).names,
       cells: [],
     }) });
   });
@@ -111,7 +128,7 @@ test("opens exact provider details by click and keyboard and closes with Escape"
 
 test("shows a prominent test-data notice and an empty state", async ({ page }) => {
   await mockDaily(page, async (_url, route) => {
-    await route.fulfill({ json: response({ using_test_data: true, names: [], cells: [], pagination: { page: 1, page_size: 5, total: 0 } }) });
+    await route.fulfill({ json: response(_url, { using_test_data: true, names: [], cells: [], pagination: { page: 1, page_size: 5, total: 0 } }) });
   });
   await page.goto("/");
   await expect(page.getByRole("status")).toContainText("测试数据");
@@ -125,7 +142,7 @@ test("hides backend details on RPC failure and retries", async ({ page }) => {
     if (attempts === 1) {
       await route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "secret rpc stack" }) });
     } else {
-      await route.fulfill({ json: response() });
+      await route.fulfill({ json: response(_url) });
     }
   });
   await page.goto("/");

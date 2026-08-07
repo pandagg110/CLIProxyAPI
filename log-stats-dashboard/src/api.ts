@@ -29,7 +29,16 @@ function isTimezone(value: unknown): value is string {
 }
 
 function isTimestampOrNull(value: unknown): value is string | null {
-  return value === null || (typeof value === "string" && value.length > 0 && !Number.isNaN(Date.parse(value)));
+  if (value === null) return true;
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (match === null) return false;
+  const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] = match;
+  if (!isDateString(`${year}-${month}-${day}`) || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) {
+    return false;
+  }
+  if (offsetHour !== undefined && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) return false;
+  return !Number.isNaN(Date.parse(value));
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -45,7 +54,15 @@ function isCell(value: unknown): value is DailyUsageCell {
     ) && isInteger(value.batch_count);
 }
 
-export function validateDailyResponse(value: unknown): DailyUsageResponse | null {
+function expectedDays(from: string, to: string): string[] {
+  const result: string[] = [];
+  for (let cursor = Date.parse(`${from}T00:00:00Z`); cursor <= Date.parse(`${to}T00:00:00Z`); cursor += 86_400_000) {
+    result.push(new Date(cursor).toISOString().slice(0, 10));
+  }
+  return result;
+}
+
+export function validateDailyResponse(value: unknown, query: DashboardQuery): DailyUsageResponse | null {
   if (!isRecord(value) || !isTimezone(value.timezone) ||
     !isDateString(value.from) || !isDateString(value.to) ||
     typeof value.using_test_data !== "boolean" ||
@@ -56,7 +73,34 @@ export function validateDailyResponse(value: unknown): DailyUsageResponse | null
     value.pagination.page_size !== 5 || !isInteger(value.pagination.total)) {
     return null;
   }
-  if (!value.days.every(isDateString)) return null;
+  if (!isDateString(query.from) || !isDateString(query.to) || query.from > query.to ||
+    value.from !== query.from || value.to !== query.to || value.from > value.to ||
+    value.pagination.page !== query.page || value.pagination.page_size !== 5) {
+    return null;
+  }
+
+  const requiredDays = expectedDays(query.from, query.to);
+  if (value.days.length !== requiredDays.length ||
+    !value.days.every((day, index) => isDateString(day) && day === requiredDays[index])) {
+    return null;
+  }
+  if (value.names.length > 5 || value.names.some((name) => name.length === 0) ||
+    new Set(value.names).size !== value.names.length) {
+    return null;
+  }
+
+  const allowedDays = new Set(value.days);
+  const allowedNames = new Set(value.names);
+  const cellPairs = new Set<string>();
+  for (const cell of value.cells) {
+    if (!allowedDays.has(cell.date) || !allowedNames.has(cell.key_name)) return null;
+    const pair = JSON.stringify([cell.date, cell.key_name]);
+    if (cellPairs.has(pair)) return null;
+    cellPairs.add(pair);
+    if (BigInt(cell.gpt_bytes) + BigInt(cell.claude_bytes) + BigInt(cell.grok_bytes) !== BigInt(cell.jsonl_bytes)) {
+      return null;
+    }
+  }
   return value as unknown as DailyUsageResponse;
 }
 
@@ -78,7 +122,7 @@ export async function fetchDailyUsage(query: DashboardQuery, signal?: AbortSigna
   } catch {
     throw new Error("invalid response");
   }
-  const data = validateDailyResponse(raw);
+  const data = validateDailyResponse(raw, query);
   if (data === null) throw new Error("invalid response");
   return data;
 }
