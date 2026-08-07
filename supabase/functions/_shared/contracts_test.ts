@@ -12,18 +12,17 @@ function validEvent() {
   return {
     schema_version: 1,
     event_id: "2026-08-01T01:00:00+08:00-codex-001",
-    target: "tos-primary",
+    target_id: "tos-primary",
     object_key: "logs/2026/08/01/01-codex.jsonl.zst",
     archive_sha256: "a".repeat(64),
     manifest_sha256: "b".repeat(64),
-    hour: "2026-08-01T01:00:00+08:00",
+    hour_start: "2026-08-01T01:00:00+08:00",
     timezone: "Asia/Shanghai",
     usage_date: "2026-08-01",
     source_count: 3,
     source_bytes: 300,
     jsonl_bytes: 360,
     compressed_bytes: 120,
-    is_test: false,
     usage: [
       {
         key_name: " 张三 ",
@@ -43,12 +42,156 @@ function validEvent() {
   };
 }
 
-Deno.test("validateIngestPayload accepts a valid event and preserves key_name exactly", () => {
+Deno.test("validateIngestPayload accepts the exact external schema and defaults test_mode", () => {
   const result = validateIngestPayload(validEvent());
 
   assert.equal(result.ok, true);
   if (result.ok) {
+    const value = result.value as unknown as Record<string, unknown>;
+    assert.equal(value.test_mode, false);
     assert.equal(result.value.usage[0].key_name, " 张三 ");
+    assert.deepEqual(Object.keys(value).sort(), [
+      "archive_sha256",
+      "compressed_bytes",
+      "event_id",
+      "hour_start",
+      "jsonl_bytes",
+      "manifest_sha256",
+      "object_key",
+      "schema_version",
+      "source_bytes",
+      "source_count",
+      "target_id",
+      "test_mode",
+      "timezone",
+      "usage",
+      "usage_date",
+    ]);
+  }
+});
+
+Deno.test("validateIngestPayload accepts an explicit test_mode", () => {
+  const event = { ...validEvent(), test_mode: true };
+
+  const result = validateIngestPayload(event);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(
+      (result.value as unknown as Record<string, unknown>).test_mode,
+      true,
+    );
+  }
+});
+
+Deno.test("validateIngestPayload rejects unknown top-level fields generically", () => {
+  const secretValue = "do-not-echo-this-secret";
+  const cases = [
+    { ...validEvent(), raw_api_key: secretValue },
+    { ...validEvent(), is_test: true },
+  ];
+
+  for (const event of cases) {
+    const result = validateIngestPayload(event);
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "payload contains unsupported fields",
+    });
+    assert.doesNotMatch(JSON.stringify(result), /raw_api_key|is_test/);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(secretValue));
+  }
+});
+
+Deno.test("validateIngestPayload rejects unknown usage fields generically", () => {
+  const event = validEvent();
+  const secretValue = "do-not-echo-this-secret";
+  event.usage[0] = {
+    ...event.usage[0],
+    access_token: secretValue,
+  } as typeof event.usage[0];
+
+  const result = validateIngestPayload(event);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "usage entries contain unsupported fields",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /access_token/);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(secretValue));
+});
+
+Deno.test("validateIngestPayload accepts ordinary relative object keys", () => {
+  const event = validEvent();
+  event.object_key = "logs/2026/08/file.jsonl.zst";
+
+  assert.equal(validateIngestPayload(event).ok, true);
+});
+
+Deno.test("validateIngestPayload rejects impossible hour_start calendar dates", () => {
+  const event = validEvent();
+  event.hour_start = "2026-02-30T00:00:00Z";
+  event.usage_date = "2026-03-02";
+
+  assert.deepEqual(validateIngestPayload(event), {
+    ok: false,
+    error: "hour_start must be an ISO-8601 timestamp with an offset",
+  });
+});
+
+Deno.test("validateIngestPayload rejects unsafe object keys without echoing them", () => {
+  const unsafeKeys = [
+    "https://bucket.example/log.jsonl.zst?X-Tos-Signature=secret",
+    "s3://bucket/log.jsonl.zst",
+    "file:///tmp/log.jsonl.zst",
+    "/var/log/private.jsonl.zst",
+    "C:\\logs\\private.jsonl.zst",
+    "\\\\server\\share\\private.jsonl.zst",
+    "logs/private.jsonl.zst?signature=secret",
+    "logs/private.jsonl.zst#fragment",
+    "logs/../private.jsonl.zst",
+    "../private.jsonl.zst",
+  ];
+
+  for (const objectKey of unsafeKeys) {
+    const event = validEvent();
+    event.object_key = objectKey;
+
+    const result = validateIngestPayload(event);
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "object_key must be a safe relative object key",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      new RegExp(objectKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+});
+
+Deno.test("validateIngestPayload rejects secret-like key names without echoing them", () => {
+  const secretLikeNames = [
+    "sk-proj-abcdefghijklmnopqrstuvwxyz012345",
+    "Bearer abcdefghijklmnopqrstuvwxyz012345",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value",
+    "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+  ];
+
+  for (const keyName of secretLikeNames) {
+    const event = validEvent();
+    event.usage[0].key_name = keyName;
+
+    const result = validateIngestPayload(event);
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "key_name must be a display label, not a secret",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      new RegExp(keyName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
   }
 });
 

@@ -30,11 +30,11 @@ Deno.test("migration defines private batch and name-provider usage tables", asyn
   for (
     const column of [
       "event_id text primary key",
-      "target text not null",
+      "target_id text not null",
       "object_key text not null",
       "archive_sha256 text not null",
       "manifest_sha256 text not null",
-      "hour timestamptz not null",
+      "hour_start timestamptz not null",
       "timezone text not null",
       "usage_date date not null",
       "source_count bigint not null",
@@ -93,7 +93,7 @@ Deno.test("migration enables RLS, revokes direct reads, and grants only intended
   );
 });
 
-Deno.test("ingest SQL validates immutable content, timezone dates, sums, uniqueness, and bigint ranges", async () => {
+Deno.test("ingest SQL validates strict fields, sensitive values, timezone dates, sums, uniqueness, and bigint ranges", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
   assert.match(
@@ -102,11 +102,22 @@ Deno.test("ingest SQL validates immutable content, timezone dates, sums, uniquen
   );
   assert.match(sql, /security definer set search_path = pg_catalog, public/);
   assert.match(sql, /schema_version/);
+  assert.match(sql, /jsonb_object_keys/);
+  assert.match(sql, /payload contains unsupported fields/);
+  assert.match(sql, /usage entries contain unsupported fields/);
+  assert.match(sql, /object_key must be a safe relative object key/);
+  assert.match(sql, /key_name must be a display label, not a secret/);
+  assert.match(sql, /test_mode/);
+  assert.doesNotMatch(sql, /payload -> 'is_test'/);
   assert.match(sql, /pg_catalog\.pg_timezone_names/);
-  assert.match(sql, /usage_date must match hour in timezone/);
+  assert.match(sql, /usage_date must match hour_start in timezone/);
   assert.match(sql, /9223372036854775807/);
   assert.match(sql, /unique key_name and provider pairs/);
-  assert.match(sql, /if _provider is null or _provider not in/);
+  assert.match(
+    sql,
+    /jsonb_typeof\(_usage_item -> 'provider'\) is distinct from 'string'/,
+  );
+  assert.match(sql, /if _provider not in/);
   assert.match(sql, /batch totals must equal usage totals/);
   assert.match(sql, /on conflict \(event_id\) do nothing/);
   assert.match(sql, /event_id_conflict/);
@@ -114,7 +125,7 @@ Deno.test("ingest SQL validates immutable content, timezone dates, sums, uniquen
   assert.match(sql, /jsonb_build_object\('status', 'inserted'/);
 });
 
-Deno.test("public daily SQL hides test rows after live data and maps providers to compact cells", async () => {
+Deno.test("public daily SQL hides test rows after live data and returns the public cell contract", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
   assert.match(
@@ -137,21 +148,27 @@ Deno.test("public daily SQL hides test rows after live data and maps providers t
       "from",
       "to",
       "using_test_data",
-      "total_names",
+      "pagination",
+      "page",
+      "page_size",
+      "total",
       "names",
       "days",
       "cells",
-      "last_synced_at",
+      "latest_sync_at",
+      "key_name",
+      "jsonl_bytes",
       "gpt_bytes",
       "claude_bytes",
       "grok_bytes",
+      "batch_count",
     ]
   ) {
     assert.ok(sql.includes(`'${key}'`), `missing response key: ${key}`);
   }
 });
 
-Deno.test("seed is deterministic test data with seven dates, three names, three providers, zeroes, and gaps", async () => {
+Deno.test("seed is deterministic test data with a seven-day query range and a full missing event date", async () => {
   const seed = await read("seed.sql");
 
   assert.match(seed, /ingest_log_usage_v1/g);
@@ -161,12 +178,26 @@ Deno.test("seed is deterministic test data with seven dates, three names, three 
   for (const provider of ["codex", "fable5", "grok45"]) {
     assert.ok(seed.includes(`'provider', '${provider}'`));
   }
-  for (let day = 1; day <= 7; day += 1) {
-    assert.ok(seed.includes(`2026-08-0${day}`));
-  }
+  assert.ok(seed.includes("2026-08-01"));
+  assert.ok(seed.includes("2026-08-07"));
+  assert.doesNotMatch(
+    seed,
+    /\(\s*date '2026-08-04',\s*pg_catalog\.jsonb_build_array/,
+  );
   assert.match(seed, /'jsonl_bytes', 0/);
-  assert.match(seed, /'is_test', true/);
-  assert.match(seed, /intentional gap/i);
+  assert.match(seed, /'test_mode', true/);
+  assert.doesNotMatch(seed, /'is_test'/);
+  assert.match(seed, /full event-date gap/i);
+
+  const nonzeroJSONLBytes = Array.from(
+    seed.matchAll(/'jsonl_bytes',\s*([0-9]+)/g),
+    (match) => Number(match[1]),
+  ).filter((value) => value > 0);
+  assert.ok(nonzeroJSONLBytes.length > 0);
+  assert.ok(
+    Math.max(...nonzeroJSONLBytes) / Math.min(...nonzeroJSONLBytes) >= 1_000,
+    "seed jsonl_bytes must span at least three orders of magnitude",
+  );
 });
 
 Deno.test("runnable SQL assertions cover behavior and privileges", async () => {
@@ -175,9 +206,21 @@ Deno.test("runnable SQL assertions cover behavior and privileges", async () => {
   assert.match(assertions, /begin;/);
   assert.match(assertions, /rollback;/);
   assert.match(assertions, /has_table_privilege/);
+  for (const privilege of ["select", "insert", "update", "delete"]) {
+    assert.match(assertions, new RegExp(`'${privilege}'`));
+  }
   assert.match(assertions, /has_function_privilege/);
   assert.match(assertions, /event_id_conflict/);
+  assert.match(assertions, /payload contains unsupported fields/);
+  assert.match(assertions, /object_key must be a safe relative object key/);
+  assert.match(assertions, /key_name must be a display label, not a secret/);
+  assert.match(assertions, /2026-01-01t16:30:00z/);
+  assert.match(assertions, /2026-01-02t02:30:00z/);
+  assert.match(assertions, /2026-01-02/);
+  assert.match(assertions, /2026-01-01/);
   assert.match(assertions, /using_test_data/);
+  assert.match(assertions, /jsonl_bytes/);
+  assert.match(assertions, /batch_count/);
   assert.match(assertions, /gpt_bytes/);
   assert.match(assertions, /claude_bytes/);
   assert.match(assertions, /grok_bytes/);

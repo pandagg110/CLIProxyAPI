@@ -13,18 +13,18 @@ export interface LogUsageEntry {
 export interface LogUsageEvent {
   schema_version: 1;
   event_id: string;
-  target: string;
+  target_id: string;
   object_key: string;
   archive_sha256: string;
   manifest_sha256: string;
-  hour: string;
+  hour_start: string;
   timezone: string;
   usage_date: string;
   source_count: number;
   source_bytes: number;
   jsonl_bytes: number;
   compressed_bytes: number;
-  is_test: boolean;
+  test_mode: boolean;
   usage: LogUsageEntry[];
 }
 
@@ -35,10 +35,12 @@ export interface IngestRpcResponse {
 
 export interface DailyUsageCell {
   date: string;
-  name: string;
+  key_name: string;
+  jsonl_bytes: number;
   gpt_bytes: number;
   claude_bytes: number;
   grok_bytes: number;
+  batch_count: number;
 }
 
 export interface PublicDailyUsageResponse {
@@ -46,11 +48,15 @@ export interface PublicDailyUsageResponse {
   from: string;
   to: string;
   using_test_data: boolean;
-  total_names: number;
+  pagination: {
+    page: number;
+    page_size: number;
+    total: number;
+  };
   names: string[];
   days: string[];
   cells: DailyUsageCell[];
-  last_synced_at: string | null;
+  latest_sync_at: string | null;
 }
 
 export interface DailyQuery {
@@ -64,6 +70,32 @@ export interface DailyQuery {
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
+
+const ingestPayloadFields = new Set([
+  "schema_version",
+  "event_id",
+  "target_id",
+  "object_key",
+  "archive_sha256",
+  "manifest_sha256",
+  "hour_start",
+  "timezone",
+  "usage_date",
+  "source_count",
+  "source_bytes",
+  "jsonl_bytes",
+  "compressed_bytes",
+  "test_mode",
+  "usage",
+]);
+
+const usageEntryFields = new Set([
+  "key_name",
+  "provider",
+  "source_count",
+  "source_bytes",
+  "jsonl_bytes",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -80,6 +112,56 @@ function isSha256(value: unknown): value is string {
 
 function isNonnegativeSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function hasOnlyFields(
+  value: Record<string, unknown>,
+  allowedFields: Set<string>,
+): boolean {
+  return Object.keys(value).every((field) => allowedFields.has(field));
+}
+
+function isSafeObjectKey(value: string): boolean {
+  const candidate = value.trim();
+  if (
+    candidate.startsWith("/") ||
+    candidate.includes("\\") ||
+    candidate.includes("?") ||
+    candidate.includes("#") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(candidate)
+  ) {
+    return false;
+  }
+  return candidate.split("/").every(
+    (segment) => !/^(?:\.|%2e){2}$/i.test(segment),
+  );
+}
+
+function isSecretLikeKeyName(value: string): boolean {
+  const candidate = value.trim();
+  if (
+    /^sk-\S+/i.test(candidate) ||
+    /^bearer\s+\S+/i.test(candidate) ||
+    /^[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}$/i.test(
+      candidate,
+    )
+  ) {
+    return true;
+  }
+  if (
+    candidate.length < 32 ||
+    !/^[a-z0-9_+/=.-]+$/i.test(candidate)
+  ) {
+    return false;
+  }
+
+  const characterClasses = [
+    /[a-z]/.test(candidate),
+    /[A-Z]/.test(candidate),
+    /[0-9]/.test(candidate),
+    /[_+/=.-]/.test(candidate),
+  ].filter(Boolean).length;
+  return candidate.length >= 48 || characterClasses >= 3;
 }
 
 function isDateString(value: unknown): value is string {
@@ -118,11 +200,42 @@ function dateInTimezone(value: Date, timezone: string): string {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function parseOffsetTimestamp(value: unknown): Date | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/i
+      .exec(value);
+  if (match === null) {
+    return null;
+  }
+
+  const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] =
+    match;
+  if (
+    !isDateString(`${year}-${month}-${day}`) ||
+    Number(hour) > 23 ||
+    Number(minute) > 59 ||
+    Number(second) > 59 ||
+    (offsetHour !== undefined && Number(offsetHour) > 23) ||
+    (offsetMinute !== undefined && Number(offsetMinute) > 59)
+  ) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export function validateIngestPayload(
   input: unknown,
 ): ValidationResult<LogUsageEvent> {
   if (!isRecord(input)) {
     return { ok: false, error: "payload must be a JSON object" };
+  }
+  if (!hasOnlyFields(input, ingestPayloadFields)) {
+    return { ok: false, error: "payload contains unsupported fields" };
   }
   if (input.schema_version !== 1) {
     return { ok: false, error: "schema_version must be 1" };
@@ -130,13 +243,19 @@ export function validateIngestPayload(
 
   const textFields = [
     ["event_id", 200],
-    ["target", 200],
+    ["target_id", 200],
     ["object_key", 2048],
   ] as const;
   for (const [field, maxLength] of textFields) {
     if (!isRequiredText(input[field], maxLength)) {
       return { ok: false, error: `${field} must be non-empty text` };
     }
+  }
+  if (!isSafeObjectKey(input.object_key as string)) {
+    return {
+      ok: false,
+      error: "object_key must be a safe relative object key",
+    };
   }
   for (const field of ["archive_sha256", "manifest_sha256"] as const) {
     if (!isSha256(input[field])) {
@@ -146,15 +265,11 @@ export function validateIngestPayload(
       };
     }
   }
-  if (
-    typeof input.hour !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i
-      .test(input.hour) ||
-    Number.isNaN(Date.parse(input.hour))
-  ) {
+  const hourStart = parseOffsetTimestamp(input.hour_start);
+  if (hourStart === null) {
     return {
       ok: false,
-      error: "hour must be an ISO-8601 timestamp with an offset",
+      error: "hour_start must be an ISO-8601 timestamp with an offset",
     };
   }
   if (!isTimezone(input.timezone)) {
@@ -164,9 +279,12 @@ export function validateIngestPayload(
     return { ok: false, error: "usage_date must be a valid YYYY-MM-DD date" };
   }
   if (
-    dateInTimezone(new Date(input.hour), input.timezone) !== input.usage_date
+    dateInTimezone(hourStart, input.timezone) !== input.usage_date
   ) {
-    return { ok: false, error: "usage_date must match hour in timezone" };
+    return {
+      ok: false,
+      error: "usage_date must match hour_start in timezone",
+    };
   }
 
   for (
@@ -184,8 +302,10 @@ export function validateIngestPayload(
       };
     }
   }
-  if (typeof input.is_test !== "boolean") {
-    return { ok: false, error: "is_test must be a boolean" };
+  if (
+    Object.hasOwn(input, "test_mode") && typeof input.test_mode !== "boolean"
+  ) {
+    return { ok: false, error: "test_mode must be a boolean" };
   }
   if (!Array.isArray(input.usage)) {
     return { ok: false, error: "usage must be an array" };
@@ -200,10 +320,22 @@ export function validateIngestPayload(
     if (!isRecord(rawEntry)) {
       return { ok: false, error: `usage[${index}] must be an object` };
     }
+    if (!hasOnlyFields(rawEntry, usageEntryFields)) {
+      return {
+        ok: false,
+        error: "usage entries contain unsupported fields",
+      };
+    }
     if (!isRequiredText(rawEntry.key_name, 256)) {
       return {
         ok: false,
         error: `usage[${index}].key_name must be non-empty text`,
+      };
+    }
+    if (isSecretLikeKeyName(rawEntry.key_name)) {
+      return {
+        ok: false,
+        error: "key_name must be a display label, not a secret",
       };
     }
     if (
@@ -260,7 +392,26 @@ export function validateIngestPayload(
     return { ok: false, error: "batch totals must equal usage totals" };
   }
 
-  return { ok: true, value: { ...input, usage } as unknown as LogUsageEvent };
+  return {
+    ok: true,
+    value: {
+      schema_version: 1,
+      event_id: input.event_id as string,
+      target_id: input.target_id as string,
+      object_key: input.object_key as string,
+      archive_sha256: input.archive_sha256 as string,
+      manifest_sha256: input.manifest_sha256 as string,
+      hour_start: input.hour_start as string,
+      timezone: input.timezone,
+      usage_date: input.usage_date,
+      source_count: input.source_count,
+      source_bytes: input.source_bytes,
+      jsonl_bytes: input.jsonl_bytes,
+      compressed_bytes: input.compressed_bytes as number,
+      test_mode: typeof input.test_mode === "boolean" ? input.test_mode : false,
+      usage,
+    },
+  };
 }
 
 export function readBearerToken(header: string | null): string | null {

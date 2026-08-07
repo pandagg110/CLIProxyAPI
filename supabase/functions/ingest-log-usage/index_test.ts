@@ -7,18 +7,17 @@ function validEvent() {
   return {
     schema_version: 1,
     event_id: "edge-test-event",
-    target: "tos-primary",
+    target_id: "tos-primary",
     object_key: "logs/edge-test.jsonl.zst",
     archive_sha256: "a".repeat(64),
     manifest_sha256: "b".repeat(64),
-    hour: "2026-08-01T01:00:00+08:00",
+    hour_start: "2026-08-01T01:00:00+08:00",
     timezone: "Asia/Shanghai",
     usage_date: "2026-08-01",
     source_count: 1,
     source_bytes: 100,
     jsonl_bytes: 120,
     compressed_bytes: 40,
-    is_test: false,
     usage: [{
       key_name: "张三",
       provider: "codex",
@@ -106,6 +105,39 @@ Deno.test("ingest handler rejects invalid JSON with status 400", async () => {
   assert.equal(calls, 0);
 });
 
+Deno.test("ingest handler rejects unsupported and sensitive fields before RPC", async () => {
+  let calls = 0;
+  const handler = createIngestHandler({
+    env,
+    rpc: () => {
+      calls += 1;
+      return Promise.resolve({ data: null, error: null });
+    },
+  });
+  const rejectedValue = "sk-proj-do-not-echo-this-value";
+  const invalidPayloads = [
+    { ...validEvent(), is_test: false },
+    { ...validEvent(), raw_api_key: rejectedValue },
+    {
+      ...validEvent(),
+      object_key: `https://example.test/log?token=${rejectedValue}`,
+    },
+    {
+      ...validEvent(),
+      usage: [{ ...validEvent().usage[0], key_name: rejectedValue }],
+    },
+  ];
+
+  for (const payload of invalidPayloads) {
+    const response = await handler(request(JSON.stringify(payload)));
+    const responseBody = await response.text();
+
+    assert.equal(response.status, 422);
+    assert.doesNotMatch(responseBody, new RegExp(rejectedValue));
+  }
+  assert.equal(calls, 0);
+});
+
 Deno.test("ingest handler hashes the exact body and calls the service-role RPC", async () => {
   const body = `${JSON.stringify(validEvent())}\n`;
   let captured: unknown;
@@ -132,7 +164,7 @@ Deno.test("ingest handler hashes the exact body and calls the service-role RPC",
     key: "service-role-key",
     functionName: "ingest_log_usage_v1",
     args: {
-      payload: validEvent(),
+      payload: { ...validEvent(), test_mode: false },
       payload_sha256: await sha256Hex(body),
     },
   });
@@ -188,7 +220,7 @@ Deno.test("ingest handler maps database validation errors to status 422", async 
   assert.equal(response.status, 422);
   assert.deepEqual(await response.json(), {
     error: "validation_error",
-    message: "validation_error: invalid timezone",
+    message: "payload failed database validation",
   });
 });
 

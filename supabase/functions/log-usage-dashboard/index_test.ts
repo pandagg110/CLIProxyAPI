@@ -54,17 +54,23 @@ Deno.test("dashboard handler calls the anon RPC and returns the compact daily sh
     from: "2026-08-01",
     to: "2026-08-02",
     using_test_data: true,
-    total_names: 1,
+    pagination: {
+      page: 2,
+      page_size: 5,
+      total: 1,
+    },
     names: ["张三"],
     days: ["2026-08-01", "2026-08-02"],
     cells: [{
       date: "2026-08-01",
-      name: "张三",
+      key_name: "张三",
+      jsonl_bytes: 120,
       gpt_bytes: 120,
       claude_bytes: 0,
       grok_bytes: 0,
+      batch_count: 1,
     }],
-    last_synced_at: "2026-08-08T00:00:00Z",
+    latest_sync_at: "2026-08-08T00:00:00Z",
   };
   let captured: unknown;
   const handler = createDashboardHandler({

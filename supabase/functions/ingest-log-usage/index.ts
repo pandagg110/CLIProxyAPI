@@ -115,7 +115,10 @@ export function createIngestHandler(
       result.error.message.startsWith("validation_error:")
     ) {
       return jsonResponse(
-        { error: "validation_error", message: result.error.message },
+        {
+          error: "validation_error",
+          message: "payload failed database validation",
+        },
         422,
       );
     }
