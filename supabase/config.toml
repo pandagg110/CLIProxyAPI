@@ -1,0 +1,7 @@
+project_id = "CLIProxyAPI"
+
+[functions.ingest-log-usage]
+verify_jwt = false
+
+[functions.log-usage-dashboard]
+verify_jwt = false

@@ -1,0 +1,207 @@
+import assert from "node:assert/strict";
+
+import { sha256Hex } from "../_shared/contracts.ts";
+import { createIngestHandler } from "./index.ts";
+
+function validEvent() {
+  return {
+    schema_version: 1,
+    event_id: "edge-test-event",
+    target: "tos-primary",
+    object_key: "logs/edge-test.jsonl.zst",
+    archive_sha256: "a".repeat(64),
+    manifest_sha256: "b".repeat(64),
+    hour: "2026-08-01T01:00:00+08:00",
+    timezone: "Asia/Shanghai",
+    usage_date: "2026-08-01",
+    source_count: 1,
+    source_bytes: 100,
+    jsonl_bytes: 120,
+    compressed_bytes: 40,
+    is_test: false,
+    usage: [{
+      key_name: "张三",
+      provider: "codex",
+      source_count: 1,
+      source_bytes: 100,
+      jsonl_bytes: 120,
+    }],
+  };
+}
+
+function env(name: string): string | undefined {
+  return {
+    LOG_STATS_INGEST_TOKEN: "expected-token",
+    SUPABASE_URL: "https://project.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+  }[name];
+}
+
+function request(body: string, token = "expected-token"): Request {
+  return new Request("https://edge.test/ingest-log-usage", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body,
+  });
+}
+
+Deno.test("ingest handler answers CORS preflight without invoking RPC", async () => {
+  let calls = 0;
+  const handler = createIngestHandler({
+    env,
+    rpc: () => {
+      calls += 1;
+      return Promise.resolve({ data: null, error: null });
+    },
+  });
+
+  const response = await handler(
+    new Request("https://edge.test/", { method: "OPTIONS" }),
+  );
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+  assert.equal(calls, 0);
+});
+
+Deno.test("ingest handler rejects missing and wrong tokens without invoking RPC", async () => {
+  let calls = 0;
+  const handler = createIngestHandler({
+    env,
+    rpc: () => {
+      calls += 1;
+      return Promise.resolve({ data: null, error: null });
+    },
+  });
+  const body = JSON.stringify(validEvent());
+  const missing = new Request("https://edge.test/", { method: "POST", body });
+
+  const missingResponse = await handler(missing);
+  const wrongResponse = await handler(request(body, "wrong-token"));
+
+  assert.equal(missingResponse.status, 401);
+  assert.deepEqual(await missingResponse.json(), { error: "unauthorized" });
+  assert.equal(wrongResponse.status, 401);
+  assert.deepEqual(await wrongResponse.json(), { error: "unauthorized" });
+  assert.equal(calls, 0);
+});
+
+Deno.test("ingest handler rejects invalid JSON with status 400", async () => {
+  let calls = 0;
+  const handler = createIngestHandler({
+    env,
+    rpc: () => {
+      calls += 1;
+      return Promise.resolve({ data: null, error: null });
+    },
+  });
+
+  const response = await handler(request("{"));
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "invalid_json" });
+  assert.equal(calls, 0);
+});
+
+Deno.test("ingest handler hashes the exact body and calls the service-role RPC", async () => {
+  const body = `${JSON.stringify(validEvent())}\n`;
+  let captured: unknown;
+  const handler = createIngestHandler({
+    env,
+    rpc: (call) => {
+      captured = call;
+      return Promise.resolve({
+        data: { status: "inserted", event_id: "edge-test-event" },
+        error: null,
+      });
+    },
+  });
+
+  const response = await handler(request(body));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    status: "inserted",
+    event_id: "edge-test-event",
+  });
+  assert.deepEqual(captured, {
+    url: "https://project.supabase.co",
+    key: "service-role-key",
+    functionName: "ingest_log_usage_v1",
+    args: {
+      payload: validEvent(),
+      payload_sha256: await sha256Hex(body),
+    },
+  });
+});
+
+Deno.test("ingest handler returns duplicate RPC results unchanged", async () => {
+  const handler = createIngestHandler({
+    env,
+    rpc: () =>
+      Promise.resolve({
+        data: { status: "duplicate", event_id: "edge-test-event" },
+        error: null,
+      }),
+  });
+
+  const response = await handler(request(JSON.stringify(validEvent())));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    status: "duplicate",
+    event_id: "edge-test-event",
+  });
+});
+
+Deno.test("ingest handler maps event ID conflicts to status 409", async () => {
+  const handler = createIngestHandler({
+    env,
+    rpc: () =>
+      Promise.resolve({
+        data: null,
+        error: { code: "P0001", message: "event_id_conflict" },
+      }),
+  });
+
+  const response = await handler(request(JSON.stringify(validEvent())));
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "event_id_conflict" });
+});
+
+Deno.test("ingest handler maps database validation errors to status 422", async () => {
+  const handler = createIngestHandler({
+    env,
+    rpc: () =>
+      Promise.resolve({
+        data: null,
+        error: { code: "22023", message: "validation_error: invalid timezone" },
+      }),
+  });
+
+  const response = await handler(request(JSON.stringify(validEvent())));
+
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), {
+    error: "validation_error",
+    message: "validation_error: invalid timezone",
+  });
+});
+
+Deno.test("ingest handler allows POST only", async () => {
+  const handler = createIngestHandler({
+    env,
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  });
+
+  const response = await handler(
+    new Request("https://edge.test/", { method: "GET" }),
+  );
+
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "POST, OPTIONS");
+});
