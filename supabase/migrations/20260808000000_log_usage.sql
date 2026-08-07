@@ -142,7 +142,12 @@ begin
     or _event_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     or _event_id ~* '^sk-'
     or _event_id ~* '^bearer([-._:]|$)'
+    or _event_id ~* '^(AIza|AKIA|ASIA|gh[pousr]_|github_pat_|xox[bpar]-|xapp-|(sk|pk|rk)_(live|test)_|whsec_)'
     or _event_id ~ '^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$'
+    or (
+      pg_catalog.char_length(_event_id) >= 32
+      and _event_id ~ '^[A-Za-z0-9]+$'
+    )
     or (
       pg_catalog.char_length(_event_id) >= 48
       and _event_id ~ '^[A-Za-z0-9_-]+$'
@@ -154,7 +159,12 @@ begin
     or _target_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     or _target_id ~* '^sk-'
     or _target_id ~* '^bearer([-._:]|$)'
+    or _target_id ~* '^(AIza|AKIA|ASIA|gh[pousr]_|github_pat_|xox[bpar]-|xapp-|(sk|pk|rk)_(live|test)_|whsec_)'
     or _target_id ~ '^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$'
+    or (
+      pg_catalog.char_length(_target_id) >= 32
+      and _target_id ~ '^[A-Za-z0-9]+$'
+    )
     or (
       pg_catalog.char_length(_target_id) >= 48
       and _target_id ~ '^[A-Za-z0-9_-]+$'

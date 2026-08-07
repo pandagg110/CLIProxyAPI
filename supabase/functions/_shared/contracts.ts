@@ -179,9 +179,12 @@ function isSafeNonSecretIdentifier(
   if (
     /^sk-/i.test(value) ||
     /^bearer(?:[-._:]|$)/i.test(value) ||
+    /^(?:AIza|AKIA|ASIA|gh[pousr]_|github_pat_|xox[bpar]-|xapp-|(?:sk|pk|rk)_(?:live|test)_|whsec_)/i
+      .test(value) ||
     /^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(
       value,
     ) ||
+    (value.length >= 32 && /^[A-Za-z0-9]+$/.test(value)) ||
     (value.length >= 48 && /^[A-Za-z0-9_-]+$/.test(value))
   ) {
     return false;

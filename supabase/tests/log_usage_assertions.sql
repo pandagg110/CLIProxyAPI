@@ -319,6 +319,13 @@ begin
 
   foreach bad_event_id in array array[
     'sk-proj-abcdefghijklmnopqrstuvwxyz012345',
+    'AIza' || pg_catalog.repeat('A', 35),
+    'AKIA' || pg_catalog.repeat('A', 16),
+    pg_catalog.repeat('A1b2', 10),
+    pg_catalog.repeat('A1b2_', 10),
+    'ghp_' || pg_catalog.repeat('A', 36),
+    'xoxb-' || pg_catalog.repeat('A', 32),
+    'sk_live_' || pg_catalog.repeat('A', 32),
     'Bearer-secret-material',
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value',
     'https://example.test/events/123',
@@ -347,6 +354,13 @@ begin
   end loop;
 
   foreach bad_target_id in array array[
+    'AIza' || pg_catalog.repeat('A', 35),
+    'ASIA' || pg_catalog.repeat('A', 16),
+    pg_catalog.repeat('Z9y8', 10),
+    pg_catalog.repeat('Z9y8-', 10),
+    'github_pat_' || pg_catalog.repeat('A', 32),
+    'xapp-' || pg_catalog.repeat('A', 32),
+    'rk_test_' || pg_catalog.repeat('A', 32),
     'https://bucket.example/logs?X-Tos-Signature=secret',
     E'C:\\logs\\target',
     E'\\\\server\\share\\target',

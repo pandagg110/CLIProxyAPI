@@ -131,6 +131,13 @@ Deno.test("validateIngestPayload accepts ordinary relative object keys", () => {
 Deno.test("validateIngestPayload rejects unsafe event identifiers without echoing them", () => {
   const rejectedIdentifiers = [
     "sk-proj-abcdefghijklmnopqrstuvwxyz012345",
+    `AIza${"A".repeat(35)}`,
+    `AKIA${"A".repeat(16)}`,
+    "A1b2".repeat(10),
+    "A1b2_".repeat(10),
+    `ghp_${"A".repeat(36)}`,
+    `xoxb-${"A".repeat(32)}`,
+    `sk_live_${"A".repeat(32)}`,
     "Bearer-secret-material",
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value",
     "https://example.test/events/123",
@@ -158,6 +165,13 @@ Deno.test("validateIngestPayload rejects unsafe event identifiers without echoin
 
 Deno.test("validateIngestPayload rejects unsafe target identifiers without echoing them", () => {
   const rejectedIdentifiers = [
+    `AIza${"A".repeat(35)}`,
+    `ASIA${"A".repeat(16)}`,
+    "Z9y8".repeat(10),
+    "Z9y8-".repeat(10),
+    `github_pat_${"A".repeat(32)}`,
+    `xapp-${"A".repeat(32)}`,
+    `rk_test_${"A".repeat(32)}`,
     "https://bucket.example/logs?X-Tos-Signature=secret",
     "C:\\logs\\target",
     "\\\\server\\share\\target",
@@ -179,6 +193,14 @@ Deno.test("validateIngestPayload rejects unsafe target identifiers without echoi
       new RegExp(targetID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+Deno.test("validateIngestPayload accepts normal slugs and UUID identifiers", () => {
+  const event = validEvent();
+  event.event_id = "550e8400-e29b-41d4-a716-446655440000";
+  event.target_id = "production-target-01";
+
+  assert.equal(validateIngestPayload(event).ok, true);
 });
 
 Deno.test("validateIngestPayload rejects impossible hour_start calendar dates", () => {
