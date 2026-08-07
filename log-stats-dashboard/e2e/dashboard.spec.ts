@@ -164,3 +164,87 @@ test("supports mobile horizontal scrolling and keyboard cell activation", async 
   await usageCell.press("Space");
   await expect(page.getByRole("dialog", { name: "日志明细" })).toBeVisible();
 });
+
+test("preserves an unsubmitted search draft, focus, and selection after a deferred response", async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await mockDaily(page, async (url, route) => {
+    await gate;
+    await route.fulfill({ json: response(url) });
+  });
+  await page.goto("/");
+  const search = page.getByLabel("按名称搜索");
+  await search.fill("财务");
+  await search.evaluate((element) => {
+    const input = element as HTMLInputElement;
+    input.focus();
+    input.setSelectionRange(0, 2, "forward");
+  });
+
+  release();
+  await expect(page.getByRole("table", { name: "每日 API Key 日志字节矩阵" })).toBeVisible();
+  await expect(search).toHaveValue("财务");
+  await expect(search).toBeFocused();
+  expect(await search.evaluate((element) => {
+    const input = element as HTMLInputElement;
+    return [input.selectionStart, input.selectionEnd, input.selectionDirection];
+  })).toEqual([0, 2, "forward"]);
+});
+
+test("keeps an open cell dialog and focus while a refresh is loading", async ({ page }) => {
+  let requestCount = 0;
+  let releaseRefresh!: () => void;
+  const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  await mockDaily(page, async (url, route) => {
+    requestCount += 1;
+    if (requestCount > 1) await refreshGate;
+    await route.fulfill({ json: response(url) });
+  });
+  await page.goto("/");
+  const cellButton = page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ });
+  await cellButton.click();
+  await expect(page.getByRole("dialog", { name: "日志明细" })).toBeVisible();
+
+  await page.evaluate(() => {
+    const url = new URL(window.location.href);
+    const to = new Date(`${url.searchParams.get("to")}T00:00:00Z`);
+    to.setUTCDate(to.getUTCDate() - 29);
+    url.searchParams.set("from", to.toISOString().slice(0, 10));
+    window.history.pushState(null, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page.getByRole("status")).toContainText("正在更新数据");
+  const dialog = page.getByRole("dialog", { name: "日志明细" });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("button", { name: "关闭明细" })).toBeFocused();
+
+  releaseRefresh();
+  await expect(page.getByRole("status")).toContainText("数据已更新");
+  await expect(dialog).toBeVisible();
+  await page.getByRole("button", { name: "关闭明细" }).click();
+  await expect(page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ })).toBeFocused();
+});
+
+test("replaces auto page correction so back can reach an earlier filter state", async ({ page }) => {
+  let requestCount = 0;
+  await mockDaily(page, async (url, route) => {
+    requestCount += 1;
+    const isShrunkSecondPage = url.searchParams.get("search") === "财务" && url.searchParams.get("page") === "2";
+    await route.fulfill({ json: response(url, isShrunkSecondPage ? {
+      pagination: { page: 2, page_size: 5, total: 1 },
+      names: [],
+      cells: [],
+    } : {}) });
+  });
+  await page.goto("/");
+  await page.getByLabel("按名称搜索").fill("财务");
+  await page.getByRole("button", { name: "搜索" }).click();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("page")).toBe("1");
+
+  const beforeBack = requestCount;
+  await page.goBack();
+  await expect.poll(() => requestCount).toBeGreaterThan(beforeBack);
+  await page.goBack();
+  await expect.poll(() => new URL(page.url()).searchParams.get("search")).toBe("");
+});

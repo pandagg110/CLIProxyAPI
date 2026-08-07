@@ -26,26 +26,42 @@ function pageCount(total: number): number {
 
 export type DailyFetcher = (query: DashboardQuery, signal?: AbortSignal) => Promise<DailyUsageResponse>;
 
+interface DraftState {
+  from: string;
+  to: string;
+  search: string;
+}
+
+interface InteractionSnapshot {
+  focusKey: string | null;
+  selection: { start: number; end: number; direction: "forward" | "backward" | "none" } | null;
+  dialogOpen: boolean;
+}
+
 export class DashboardApp {
   private query: DashboardQuery;
+  private drafts: DraftState;
   private data: DailyUsageResponse | null = null;
   private loading = false;
   private failed = false;
   private validationMessage = "";
   private controller: AbortController | null = null;
-  private previousFocus: HTMLElement | null = null;
+  private openCell: Pick<DailyUsageCell, "date" | "key_name"> | null = null;
+  private dialogTriggerKey: string | null = null;
 
   constructor(
     private readonly root: HTMLElement,
     private readonly fetcher: DailyFetcher = fetchDailyUsage,
   ) {
     this.query = parseDashboardQuery(window.location.search, localToday());
+    this.drafts = { from: this.query.from, to: this.query.to, search: this.query.search };
   }
 
   start(): void {
     this.writeUrl("replace");
     window.addEventListener("popstate", () => {
       this.query = parseDashboardQuery(window.location.search, localToday());
+      this.drafts = { from: this.query.from, to: this.query.to, search: this.query.search };
       this.validationMessage = "";
       void this.load();
     });
@@ -65,10 +81,10 @@ export class DashboardApp {
     else window.history.replaceState(null, "", url);
   }
 
-  private updateQuery(next: DashboardQuery): void {
+  private updateQuery(next: DashboardQuery, historyMode: "push" | "replace" = "push"): void {
     this.query = next;
     this.validationMessage = "";
-    this.writeUrl("push");
+    this.writeUrl(historyMode);
     void this.load();
   }
 
@@ -87,7 +103,7 @@ export class DashboardApp {
       this.failed = false;
       const lastPage = pageCount(data.pagination.total);
       if (data.pagination.total > 0 && query.page > lastPage) {
-        this.updateQuery({ ...this.query, page: lastPage });
+        this.updateQuery({ ...this.query, page: lastPage }, "replace");
         return;
       }
     } catch (error) {
@@ -103,6 +119,7 @@ export class DashboardApp {
   }
 
   private render(): void {
+    const interaction = this.captureInteraction();
     const view = deriveViewState({
       loading: this.loading,
       hasData: this.data !== null,
@@ -132,18 +149,18 @@ export class DashboardApp {
 
         <section class="filters" aria-label="筛选条件">
           <div class="quick-ranges" aria-label="快捷日期范围">
-            <button type="button" data-range="7">近 7 天</button>
-            <button type="button" data-range="30">近 30 天</button>
+            <button type="button" data-range="7" data-focus-key="range-7">近 7 天</button>
+            <button type="button" data-range="30" data-focus-key="range-30">近 30 天</button>
           </div>
           <form id="date-form" class="date-form">
-            <label>开始日期<input name="from" type="date" value="${escapeHtml(this.query.from)}" required></label>
+            <label>开始日期<input name="from" type="date" value="${escapeHtml(this.drafts.from)}" data-focus-key="filter-from" required></label>
             <span aria-hidden="true">至</span>
-            <label>结束日期<input name="to" type="date" value="${escapeHtml(this.query.to)}" required></label>
-            <button type="submit">应用日期</button>
+            <label>结束日期<input name="to" type="date" value="${escapeHtml(this.drafts.to)}" data-focus-key="filter-to" required></label>
+            <button type="submit" data-focus-key="apply-date">应用日期</button>
           </form>
           <form id="search-form" class="search-form" role="search">
-            <label>按名称搜索<input name="search" type="search" maxlength="100" value="${escapeHtml(this.query.search)}" placeholder="API Key Name"></label>
-            <button type="submit">搜索</button>
+            <label>按名称搜索<input name="search" type="search" maxlength="100" value="${escapeHtml(this.drafts.search)}" data-focus-key="filter-search" placeholder="API Key Name"></label>
+            <button type="submit" data-focus-key="apply-search">搜索</button>
           </form>
           ${this.validationMessage ? `<p class="validation" role="alert">${escapeHtml(this.validationMessage)}</p>` : ""}
         </section>
@@ -158,17 +175,18 @@ export class DashboardApp {
       <dialog id="details-dialog" aria-labelledby="details-title">
         <div class="dialog-head">
           <h2 id="details-title">日志明细</h2>
-          <button type="button" class="icon-button" data-close aria-label="关闭明细">关闭</button>
+          <button type="button" class="icon-button" data-close data-focus-key="dialog-close" aria-label="关闭明细">关闭</button>
         </div>
         <div id="details-content"></div>
       </dialog>
     `;
     this.bindEvents();
+    this.restoreInteraction(interaction);
   }
 
   private renderContent(fatalError: boolean, empty: boolean): string {
     if (fatalError) {
-      return '<section class="state-card"><h2>暂时无法获取统计数据</h2><p>数据暂时无法加载，请稍后重试。</p><button type="button" data-retry>重试</button></section>';
+      return '<section class="state-card"><h2>暂时无法获取统计数据</h2><p>数据暂时无法加载，请稍后重试。</p><button type="button" data-retry data-focus-key="retry">重试</button></section>';
     }
     if (this.data === null) {
       return '<section class="state-card" aria-hidden="true"><div class="skeleton"></div><div class="skeleton short"></div></section>';
@@ -209,24 +227,36 @@ export class DashboardApp {
         }
         const formatted = formatDecimalBytes(entry.jsonl_bytes);
         const encoded = encodeURIComponent(JSON.stringify([entry.date, entry.key_name]));
-        return `<td class="intensity-${intensityLevel(entry.jsonl_bytes, maximum)}"><button type="button" class="cell-button" data-cell="${encoded}" aria-label="${escapeHtml(name)}，${escapeHtml(day)}，${escapeHtml(formatted)}"><strong>${escapeHtml(formatted)}</strong><small>${entry.batch_count} 批</small></button></td>`;
+        return `<td class="intensity-${intensityLevel(entry.jsonl_bytes, maximum)}"><button type="button" class="cell-button" data-cell="${encoded}" data-focus-key="cell-${encoded}" aria-label="${escapeHtml(name)}，${escapeHtml(day)}，${escapeHtml(formatted)}"><strong>${escapeHtml(formatted)}</strong><small>${entry.batch_count} 批</small></button></td>`;
       }).join("");
       return `<tr><th scope="row">${escapeHtml(day)}</th>${cells}</tr>`;
     }).join("");
-    return `<section class="matrix-section" aria-labelledby="matrix-heading"><div class="section-heading"><div><h2 id="matrix-heading">每日 JSONL 字节</h2><p>数值为精确字节；“无记录”与 0 B 分开显示。</p></div><p class="legend" aria-label="蓝色深浅仅辅助表示相对用量">浅色 → 深色：相对用量</p></div><div class="table-scroll" data-testid="matrix-scroll" tabindex="0"><table aria-label="每日 API Key 日志字节矩阵"><caption class="sr-only">日期为行，API Key Name 为列的 JSONL 字节矩阵</caption><thead><tr><th scope="col">日期</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    return `<section class="matrix-section" aria-labelledby="matrix-heading"><div class="section-heading"><div><h2 id="matrix-heading">每日 JSONL 字节</h2><p>数值为精确字节；“无记录”与 0 B 分开显示。</p></div><p class="legend" aria-label="蓝色深浅仅辅助表示相对用量">浅色 → 深色：相对用量</p></div><div class="table-scroll" data-testid="matrix-scroll" data-focus-key="matrix-scroll" tabindex="0"><table aria-label="每日 API Key 日志字节矩阵"><caption class="sr-only">日期为行，API Key Name 为列的 JSONL 字节矩阵</caption><thead><tr><th scope="col">日期</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
   }
 
   private renderPagination(): string {
     const pagination = this.data!.pagination;
     const pages = pageCount(pagination.total);
-    return `<nav class="pagination" aria-label="人员分页"><button type="button" data-page="${pagination.page - 1}" ${pagination.page <= 1 ? "disabled" : ""}>上一页</button><p>第 ${pagination.page} / ${pages} 页，共 ${pagination.total} 个名称</p><button type="button" data-page="${pagination.page + 1}" ${pagination.page >= pages ? "disabled" : ""}>下一页</button></nav>`;
+    return `<nav class="pagination" aria-label="人员分页"><button type="button" data-page="${pagination.page - 1}" data-focus-key="page-previous" ${pagination.page <= 1 ? "disabled" : ""}>上一页</button><p>第 ${pagination.page} / ${pages} 页，共 ${pagination.total} 个名称</p><button type="button" data-page="${pagination.page + 1}" data-focus-key="page-next" ${pagination.page >= pages ? "disabled" : ""}>下一页</button></nav>`;
   }
 
   private bindEvents(): void {
+    this.root.querySelector<HTMLInputElement>('input[name="from"]')?.addEventListener("input", (event) => {
+      this.drafts.from = (event.currentTarget as HTMLInputElement).value;
+    });
+    this.root.querySelector<HTMLInputElement>('input[name="to"]')?.addEventListener("input", (event) => {
+      this.drafts.to = (event.currentTarget as HTMLInputElement).value;
+    });
+    this.root.querySelector<HTMLInputElement>('input[name="search"]')?.addEventListener("input", (event) => {
+      this.drafts.search = (event.currentTarget as HTMLInputElement).value;
+    });
     this.root.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((button) => {
       button.addEventListener("click", () => {
         const days = Number(button.dataset.range) as 7 | 30;
-        this.updateQuery({ ...this.query, ...quickRange(days, localToday()), page: 1 });
+        const range = quickRange(days, localToday());
+        this.drafts.from = range.from;
+        this.drafts.to = range.to;
+        this.updateQuery({ ...this.query, ...range, page: 1 });
       });
     });
     this.root.querySelector<HTMLFormElement>("#date-form")?.addEventListener("submit", (event) => {
@@ -260,16 +290,66 @@ export class DashboardApp {
     });
     const dialog = this.root.parentElement?.querySelector<HTMLDialogElement>("#details-dialog") ?? document.querySelector<HTMLDialogElement>("#details-dialog");
     dialog?.querySelector<HTMLButtonElement>("[data-close]")?.addEventListener("click", () => dialog.close());
-    dialog?.addEventListener("close", () => this.previousFocus?.focus(), { once: true });
+    dialog?.addEventListener("close", () => {
+      this.openCell = null;
+      const trigger = this.findFocusElement(this.dialogTriggerKey);
+      this.dialogTriggerKey = null;
+      trigger?.focus();
+    });
   }
 
   private openDetails(cell: DailyUsageCell, trigger: HTMLElement): void {
-    const dialog = document.querySelector<HTMLDialogElement>("#details-dialog");
+    this.openCell = { date: cell.date, key_name: cell.key_name };
+    this.dialogTriggerKey = trigger.dataset.focusKey ?? null;
+    this.showDialog(cell);
+  }
+
+  private captureInteraction(): InteractionSnapshot {
+    const active = document.activeElement instanceof HTMLElement && this.root.contains(document.activeElement)
+      ? document.activeElement
+      : null;
+    const selection = active instanceof HTMLInputElement && active.selectionStart !== null && active.selectionEnd !== null
+      ? {
+          start: active.selectionStart,
+          end: active.selectionEnd,
+          direction: active.selectionDirection ?? "none",
+        }
+      : null;
+    return {
+      focusKey: active?.dataset.focusKey ?? null,
+      selection,
+      dialogOpen: this.root.querySelector<HTMLDialogElement>("#details-dialog")?.open ?? false,
+    };
+  }
+
+  private restoreInteraction(snapshot: InteractionSnapshot): void {
+    if (snapshot.dialogOpen && this.openCell !== null) {
+      const cell = this.data?.cells.find((candidate) =>
+        candidate.date === this.openCell?.date && candidate.key_name === this.openCell?.key_name
+      );
+      if (cell !== undefined) this.showDialog(cell, false);
+      else this.openCell = null;
+    }
+
+    const target = this.findFocusElement(snapshot.focusKey);
+    target?.focus();
+    if (target instanceof HTMLInputElement && snapshot.selection !== null) {
+      target.setSelectionRange(snapshot.selection.start, snapshot.selection.end, snapshot.selection.direction);
+    }
+  }
+
+  private findFocusElement(key: string | null): HTMLElement | null {
+    if (key === null) return null;
+    return Array.from(this.root.querySelectorAll<HTMLElement>("[data-focus-key]"))
+      .find((element) => element.dataset.focusKey === key) ?? null;
+  }
+
+  private showDialog(cell: DailyUsageCell, focusClose = true): void {
+    const dialog = this.root.querySelector<HTMLDialogElement>("#details-dialog");
     const content = dialog?.querySelector<HTMLElement>("#details-content") ?? null;
     if (dialog === null || content === null) return;
-    this.previousFocus = trigger;
     content.innerHTML = `<dl class="details"><div><dt>日期</dt><dd>${escapeHtml(cell.date)}</dd></div><div><dt>API Key Name</dt><dd>${escapeHtml(cell.key_name)}</dd></div><div><dt>JSONL 总字节</dt><dd>${escapeHtml(formatDecimalBytes(cell.jsonl_bytes))}</dd></div>${providerBreakdown(cell).map((provider) => `<div><dt>${provider.label}</dt><dd>${escapeHtml(formatDecimalBytes(provider.bytes))}</dd></div>`).join("")}<div><dt>批次</dt><dd>批次数：${cell.batch_count}</dd></div></dl>`;
-    dialog.showModal();
-    dialog.querySelector<HTMLButtonElement>("[data-close]")?.focus();
+    if (!dialog.open) dialog.showModal();
+    if (focusClose) dialog.querySelector<HTMLButtonElement>("[data-close]")?.focus();
   }
 }

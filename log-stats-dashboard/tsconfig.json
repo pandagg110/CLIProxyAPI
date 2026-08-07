@@ -12,7 +12,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "strict": true,
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals", "vite/client", "node"]
   },
   "include": ["src", "tests", "vite.config.ts"]
 }
