@@ -19,7 +19,7 @@ export interface IngestHandlerDependencies {
   env?: EnvReader;
   rpc?: RpcCaller;
   compareTokens?: (left: string, right: string) => Promise<boolean>;
-  hashBody?: (body: string) => Promise<string>;
+  hashBody?: (body: Uint8Array) => Promise<string>;
 }
 
 function jsonResponse(
@@ -69,7 +69,14 @@ export function createIngestHandler(
       return jsonResponse({ error: "unauthorized" }, 401);
     }
 
-    const rawBody = await request.text();
+    const rawBodyBytes = new Uint8Array(await request.arrayBuffer());
+    const payloadSha256 = await hashBody(rawBodyBytes);
+    let rawBody: string;
+    try {
+      rawBody = new TextDecoder("utf-8", { fatal: true }).decode(rawBodyBytes);
+    } catch {
+      return jsonResponse({ error: "invalid_utf8" }, 400);
+    }
     let parsedBody: unknown;
     try {
       parsedBody = JSON.parse(rawBody);
@@ -97,7 +104,7 @@ export function createIngestHandler(
       functionName: "ingest_log_usage_v1",
       args: {
         payload: validation.value,
-        payload_sha256: await hashBody(rawBody),
+        payload_sha256: payloadSha256,
       },
     });
     if (result.error === null) {

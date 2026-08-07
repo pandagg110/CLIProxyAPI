@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "event_id": "2026-08-08T01:00:00+08:00-upload-0001",
+  "event_id": "2026-08-08T01:00:00-0800-upload-0001",
   "target_id": "tos-primary",
   "object_key": "logs/2026/08/08/01/usage.jsonl.zst",
   "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

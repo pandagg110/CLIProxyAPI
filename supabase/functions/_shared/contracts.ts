@@ -164,6 +164,31 @@ function isSecretLikeKeyName(value: string): boolean {
   return candidate.length >= 48 || characterClasses >= 3;
 }
 
+function isSafeNonSecretIdentifier(
+  value: unknown,
+  maxLength: number,
+): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  ) {
+    return false;
+  }
+  if (
+    /^sk-/i.test(value) ||
+    /^bearer(?:[-._:]|$)/i.test(value) ||
+    /^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(
+      value,
+    ) ||
+    (value.length >= 48 && /^[A-Za-z0-9_-]+$/.test(value))
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function isDateString(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -241,17 +266,22 @@ export function validateIngestPayload(
     return { ok: false, error: "schema_version must be 1" };
   }
 
-  const textFields = [
-    ["event_id", 200],
-    ["target_id", 200],
-    ["object_key", 2048],
-  ] as const;
-  for (const [field, maxLength] of textFields) {
-    if (!isRequiredText(input[field], maxLength)) {
-      return { ok: false, error: `${field} must be non-empty text` };
-    }
+  if (!isSafeNonSecretIdentifier(input.event_id, 200)) {
+    return {
+      ok: false,
+      error: "event_id must be a safe non-secret identifier",
+    };
   }
-  if (!isSafeObjectKey(input.object_key as string)) {
+  if (!isSafeNonSecretIdentifier(input.target_id, 200)) {
+    return {
+      ok: false,
+      error: "target_id must be a safe non-secret identifier",
+    };
+  }
+  if (!isRequiredText(input.object_key, 2048)) {
+    return { ok: false, error: "object_key must be non-empty text" };
+  }
+  if (!isSafeObjectKey(input.object_key)) {
     return {
       ok: false,
       error: "object_key must be a safe relative object key",
@@ -423,9 +453,11 @@ export function readBearerToken(header: string | null): string | null {
   return token.length > 0 ? token : null;
 }
 
-async function sha256Bytes(value: string): Promise<Uint8Array> {
+async function sha256Bytes(value: Uint8Array): Promise<Uint8Array> {
+  const bytes = new Uint8Array(value.byteLength);
+  bytes.set(value);
   return new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+    await crypto.subtle.digest("SHA-256", bytes.buffer),
   );
 }
 
@@ -433,9 +465,10 @@ export async function constantTimeEqual(
   left: string,
   right: string,
 ): Promise<boolean> {
+  const encoder = new TextEncoder();
   const [leftDigest, rightDigest] = await Promise.all([
-    sha256Bytes(left),
-    sha256Bytes(right),
+    sha256Bytes(encoder.encode(left)),
+    sha256Bytes(encoder.encode(right)),
   ]);
   let difference = 0;
   for (let index = 0; index < leftDigest.length; index += 1) {
@@ -444,7 +477,7 @@ export async function constantTimeEqual(
   return difference === 0;
 }
 
-export async function sha256Hex(value: string): Promise<string> {
+export async function sha256Hex(value: Uint8Array): Promise<string> {
   const digest = await sha256Bytes(value);
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
     "",

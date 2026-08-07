@@ -18,9 +18,12 @@ See [`examples/ingest-event.json`](examples/ingest-event.json) for a complete
 request. The request contains:
 
 - `schema_version`: must be `1`.
-- `event_id`: immutable idempotency key for one uploaded batch.
-- `target_id`, `object_key`, `archive_sha256`, and `manifest_sha256`:
-  uploaded-object identity.
+- `event_id`: immutable idempotency key for one uploaded batch. It must begin
+  with an ASCII letter or digit and contain only ASCII letters, digits, `.`,
+  `_`, `:`, or `-`.
+- `target_id`: a target slug using the same restricted identifier characters.
+- `object_key`, `archive_sha256`, and `manifest_sha256`: uploaded-object
+  identity.
 - `hour_start`, `timezone`, and `usage_date`: `usage_date` must be the date of
   `hour_start` in the named IANA timezone. `hour_start` must include `Z` or a
   numeric UTC offset.
@@ -40,18 +43,23 @@ paths, backslashes, and `..` traversal segments are rejected. `key_name` remains
 an exact display label, but API-key prefixes, bearer tokens, JWT-shaped strings,
 and long token-like ASCII strings are rejected.
 
-The edge function computes SHA-256 over the exact raw request body and passes
-that digest to `ingest_log_usage_v1`. Repeating the same `event_id` and digest
-returns:
+`event_id` and `target_id` also reject secret prefixes, JWT-shaped values, URLs,
+paths, whitespace, and log-like content. These checks run independently in the
+Edge function and SQL RPC.
+
+The edge function computes SHA-256 directly over the exact raw request bytes
+before decoding them as strict UTF-8 and parsing JSON, then passes that digest
+to `ingest_log_usage_v1`. This preserves byte differences such as a UTF-8 BOM.
+Repeating the same `event_id` and digest returns:
 
 ```json
 { "status": "duplicate", "event_id": "..." }
 ```
 
-Reusing an `event_id` with different content returns HTTP 409. Invalid JSON
-returns 400, missing or incorrect ingest authorization returns 401, and contract
-validation failures return 422. The function does not log the request body or
-authorization token.
+Reusing an `event_id` with different content returns HTTP 409. Invalid UTF-8 or
+invalid JSON returns 400 without echoing the body, missing or incorrect ingest
+authorization returns 401, and contract validation failures return 422. The
+function does not log the request body or authorization token.
 
 Supported providers and public dashboard fields are:
 

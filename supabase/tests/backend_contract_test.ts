@@ -105,6 +105,8 @@ Deno.test("ingest SQL validates strict fields, sensitive values, timezone dates,
   assert.match(sql, /jsonb_object_keys/);
   assert.match(sql, /payload contains unsupported fields/);
   assert.match(sql, /usage entries contain unsupported fields/);
+  assert.match(sql, /event_id must be a safe non-secret identifier/);
+  assert.match(sql, /target_id must be a safe non-secret identifier/);
   assert.match(sql, /object_key must be a safe relative object key/);
   assert.match(sql, /key_name must be a display label, not a secret/);
   assert.match(sql, /test_mode/);
@@ -212,6 +214,8 @@ Deno.test("runnable SQL assertions cover behavior and privileges", async () => {
   assert.match(assertions, /has_function_privilege/);
   assert.match(assertions, /event_id_conflict/);
   assert.match(assertions, /payload contains unsupported fields/);
+  assert.match(assertions, /event_id must be a safe non-secret identifier/);
+  assert.match(assertions, /target_id must be a safe non-secret identifier/);
   assert.match(assertions, /object_key must be a safe relative object key/);
   assert.match(assertions, /key_name must be a display label, not a secret/);
   assert.match(assertions, /2026-01-01t16:30:00z/);

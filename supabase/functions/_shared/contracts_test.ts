@@ -11,7 +11,7 @@ import {
 function validEvent() {
   return {
     schema_version: 1,
-    event_id: "2026-08-01T01:00:00+08:00-codex-001",
+    event_id: "2026-08-01T01:00:00-0800-codex-001",
     target_id: "tos-primary",
     object_key: "logs/2026/08/01/01-codex.jsonl.zst",
     archive_sha256: "a".repeat(64),
@@ -126,6 +126,59 @@ Deno.test("validateIngestPayload accepts ordinary relative object keys", () => {
   event.object_key = "logs/2026/08/file.jsonl.zst";
 
   assert.equal(validateIngestPayload(event).ok, true);
+});
+
+Deno.test("validateIngestPayload rejects unsafe event identifiers without echoing them", () => {
+  const rejectedIdentifiers = [
+    "sk-proj-abcdefghijklmnopqrstuvwxyz012345",
+    "Bearer-secret-material",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value",
+    "https://example.test/events/123",
+    "C:\\logs\\event.jsonl",
+    "event id with spaces",
+    '{"level":"info","message":"raw log body"}',
+  ];
+
+  for (const eventID of rejectedIdentifiers) {
+    const event = validEvent();
+    event.event_id = eventID;
+
+    const result = validateIngestPayload(event);
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "event_id must be a safe non-secret identifier",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      new RegExp(eventID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+});
+
+Deno.test("validateIngestPayload rejects unsafe target identifiers without echoing them", () => {
+  const rejectedIdentifiers = [
+    "https://bucket.example/logs?X-Tos-Signature=secret",
+    "C:\\logs\\target",
+    "\\\\server\\share\\target",
+    "sk-proj-abcdefghijklmnopqrstuvwxyz012345",
+  ];
+
+  for (const targetID of rejectedIdentifiers) {
+    const event = validEvent();
+    event.target_id = targetID;
+
+    const result = validateIngestPayload(event);
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "target_id must be a safe non-secret identifier",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      new RegExp(targetID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
 });
 
 Deno.test("validateIngestPayload rejects impossible hour_start calendar dates", () => {
@@ -262,7 +315,7 @@ Deno.test("constantTimeEqual compares tokens through fixed-length digests", asyn
 
 Deno.test("sha256Hex hashes the exact raw body bytes", async () => {
   assert.equal(
-    await sha256Hex('{"schema_version":1}\n'),
+    await sha256Hex(new TextEncoder().encode('{"schema_version":1}\n')),
     "c5d130e87e377f65c0f77eda3629f01de137de88cd3b0a181aa1b6fda001afdc",
   );
 });

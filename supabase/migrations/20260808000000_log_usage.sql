@@ -126,10 +126,10 @@ begin
   end if;
 
   if pg_catalog.jsonb_typeof(payload -> 'event_id') is distinct from 'string' then
-    raise exception using errcode = '22023', message = 'validation_error: event_id must be non-empty text';
+    raise exception using errcode = '22023', message = 'validation_error: event_id must be a safe non-secret identifier';
   end if;
   if pg_catalog.jsonb_typeof(payload -> 'target_id') is distinct from 'string' then
-    raise exception using errcode = '22023', message = 'validation_error: target_id must be non-empty text';
+    raise exception using errcode = '22023', message = 'validation_error: target_id must be a safe non-secret identifier';
   end if;
   if pg_catalog.jsonb_typeof(payload -> 'object_key') is distinct from 'string' then
     raise exception using errcode = '22023', message = 'validation_error: object_key must be non-empty text';
@@ -137,11 +137,29 @@ begin
   _event_id := payload ->> 'event_id';
   _target_id := payload ->> 'target_id';
   _object_key := payload ->> 'object_key';
-  if pg_catalog.btrim(_event_id) = '' or pg_catalog.char_length(_event_id) > 200 then
-    raise exception using errcode = '22023', message = 'validation_error: event_id must be non-empty text';
+  if pg_catalog.char_length(_event_id) = 0
+    or pg_catalog.char_length(_event_id) > 200
+    or _event_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    or _event_id ~* '^sk-'
+    or _event_id ~* '^bearer([-._:]|$)'
+    or _event_id ~ '^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$'
+    or (
+      pg_catalog.char_length(_event_id) >= 48
+      and _event_id ~ '^[A-Za-z0-9_-]+$'
+    ) then
+    raise exception using errcode = '22023', message = 'validation_error: event_id must be a safe non-secret identifier';
   end if;
-  if pg_catalog.btrim(_target_id) = '' or pg_catalog.char_length(_target_id) > 200 then
-    raise exception using errcode = '22023', message = 'validation_error: target_id must be non-empty text';
+  if pg_catalog.char_length(_target_id) = 0
+    or pg_catalog.char_length(_target_id) > 200
+    or _target_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    or _target_id ~* '^sk-'
+    or _target_id ~* '^bearer([-._:]|$)'
+    or _target_id ~ '^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$'
+    or (
+      pg_catalog.char_length(_target_id) >= 48
+      and _target_id ~ '^[A-Za-z0-9_-]+$'
+    ) then
+    raise exception using errcode = '22023', message = 'validation_error: target_id must be a safe non-secret identifier';
   end if;
   if pg_catalog.btrim(_object_key) = '' or pg_catalog.char_length(_object_key) > 2048 then
     raise exception using errcode = '22023', message = 'validation_error: object_key must be non-empty text';

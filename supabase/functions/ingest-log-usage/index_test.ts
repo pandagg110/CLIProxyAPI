@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 
-import { sha256Hex } from "../_shared/contracts.ts";
 import { createIngestHandler } from "./index.ts";
 
 function validEvent() {
@@ -36,7 +35,7 @@ function env(name: string): string | undefined {
   }[name];
 }
 
-function request(body: string, token = "expected-token"): Request {
+function request(body: BodyInit, token = "expected-token"): Request {
   return new Request("https://edge.test/ingest-log-usage", {
     method: "POST",
     headers: {
@@ -45,6 +44,17 @@ function request(body: string, token = "expected-token"): Request {
     },
     body,
   });
+}
+
+async function sha256HexForBytes(value: Uint8Array): Promise<string> {
+  const bytes = new Uint8Array(value.byteLength);
+  bytes.set(value);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes.buffer),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 Deno.test("ingest handler answers CORS preflight without invoking RPC", async () => {
@@ -98,10 +108,36 @@ Deno.test("ingest handler rejects invalid JSON with status 400", async () => {
     },
   });
 
-  const response = await handler(request("{"));
+  const invalidBody = '{"secret":"do-not-echo"';
+  const response = await handler(request(invalidBody));
+  const responseBody = await response.text();
 
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "invalid_json" });
+  assert.deepEqual(JSON.parse(responseBody), { error: "invalid_json" });
+  assert.doesNotMatch(responseBody, /do-not-echo/);
+  assert.equal(calls, 0);
+});
+
+Deno.test("ingest handler rejects invalid UTF-8 without leaking the body", async () => {
+  let calls = 0;
+  const handler = createIngestHandler({
+    env,
+    rpc: () => {
+      calls += 1;
+      return Promise.resolve({ data: null, error: null });
+    },
+  });
+  const prefix = new TextEncoder().encode('{"secret":"do-not-echo');
+  const invalidBody = new Uint8Array(prefix.length + 1);
+  invalidBody.set(prefix);
+  invalidBody[invalidBody.length - 1] = 0xff;
+
+  const response = await handler(request(invalidBody));
+  const responseBody = await response.text();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(JSON.parse(responseBody), { error: "invalid_utf8" });
+  assert.doesNotMatch(responseBody, /do-not-echo/);
   assert.equal(calls, 0);
 });
 
@@ -126,6 +162,12 @@ Deno.test("ingest handler rejects unsupported and sensitive fields before RPC", 
       ...validEvent(),
       usage: [{ ...validEvent().usage[0], key_name: rejectedValue }],
     },
+    { ...validEvent(), event_id: rejectedValue },
+    {
+      ...validEvent(),
+      target_id: `https://example.test/log?X-Tos-Signature=${rejectedValue}`,
+    },
+    { ...validEvent(), target_id: `C:\\logs\\${rejectedValue}` },
   ];
 
   for (const payload of invalidPayloads) {
@@ -140,6 +182,7 @@ Deno.test("ingest handler rejects unsupported and sensitive fields before RPC", 
 
 Deno.test("ingest handler hashes the exact body and calls the service-role RPC", async () => {
   const body = `${JSON.stringify(validEvent())}\n`;
+  const bodyBytes = new TextEncoder().encode(body);
   let captured: unknown;
   const handler = createIngestHandler({
     env,
@@ -152,7 +195,7 @@ Deno.test("ingest handler hashes the exact body and calls the service-role RPC",
     },
   });
 
-  const response = await handler(request(body));
+  const response = await handler(request(bodyBytes));
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
@@ -165,7 +208,44 @@ Deno.test("ingest handler hashes the exact body and calls the service-role RPC",
     functionName: "ingest_log_usage_v1",
     args: {
       payload: { ...validEvent(), test_mode: false },
-      payload_sha256: await sha256Hex(body),
+      payload_sha256: await sha256HexForBytes(bodyBytes),
+    },
+  });
+});
+
+Deno.test("ingest handler hashes UTF-8 BOM bytes instead of decoded text", async () => {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(validEvent()));
+  const bodyBytes = new Uint8Array(jsonBytes.length + 3);
+  bodyBytes.set([0xef, 0xbb, 0xbf]);
+  bodyBytes.set(jsonBytes, 3);
+  const decodedBytes = new TextEncoder().encode(
+    new TextDecoder().decode(bodyBytes),
+  );
+  let captured: unknown;
+  const handler = createIngestHandler({
+    env,
+    rpc: (call) => {
+      captured = call;
+      return Promise.resolve({
+        data: { status: "inserted", event_id: "edge-test-event" },
+        error: null,
+      });
+    },
+  });
+
+  const response = await handler(request(bodyBytes));
+  const rawDigest = await sha256HexForBytes(bodyBytes);
+  const decodedDigest = await sha256HexForBytes(decodedBytes);
+
+  assert.equal(response.status, 200);
+  assert.notEqual(rawDigest, decodedDigest);
+  assert.deepEqual(captured, {
+    url: "https://project.supabase.co",
+    key: "service-role-key",
+    functionName: "ingest_log_usage_v1",
+    args: {
+      payload: { ...validEvent(), test_mode: false },
+      payload_sha256: rawDigest,
     },
   });
 });

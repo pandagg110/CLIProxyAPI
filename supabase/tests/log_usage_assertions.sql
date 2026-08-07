@@ -179,6 +179,8 @@ declare
   bad_object_key text;
   secret_key_name text;
   error_message text;
+  bad_event_id text;
+  bad_target_id text;
   conflict_seen boolean := false;
   validation_seen boolean := false;
   rejection_seen boolean := false;
@@ -314,6 +316,64 @@ begin
   if not rejection_seen then
     raise exception 'external is_test was not rejected';
   end if;
+
+  foreach bad_event_id in array array[
+    'sk-proj-abcdefghijklmnopqrstuvwxyz012345',
+    'Bearer-secret-material',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value',
+    'https://example.test/events/123',
+    E'C:\\logs\\event.jsonl',
+    'event id with spaces',
+    '{"level":"info","message":"raw log body"}'
+  ]
+  loop
+    rejection_seen := false;
+    error_message := null;
+    begin
+      perform public.ingest_log_usage_v1(
+        test_payload || pg_catalog.jsonb_build_object('event_id', bad_event_id),
+        pg_catalog.repeat('1', 64)
+      );
+    exception
+      when sqlstate '22023' then
+        rejection_seen := true;
+        error_message := sqlerrm;
+    end;
+    if not rejection_seen
+      or error_message <> 'validation_error: event_id must be a safe non-secret identifier'
+      or pg_catalog.strpos(error_message, bad_event_id) > 0 then
+      raise exception 'unsafe event identifier was not rejected safely';
+    end if;
+  end loop;
+
+  foreach bad_target_id in array array[
+    'https://bucket.example/logs?X-Tos-Signature=secret',
+    E'C:\\logs\\target',
+    E'\\\\server\\share\\target',
+    'sk-proj-abcdefghijklmnopqrstuvwxyz012345'
+  ]
+  loop
+    rejection_seen := false;
+    error_message := null;
+    begin
+      perform public.ingest_log_usage_v1(
+        test_payload || pg_catalog.jsonb_build_object(
+          'event_id', 'sql-assert-bad-target',
+          'target_id', bad_target_id
+        ),
+        pg_catalog.repeat('1', 64)
+      );
+    exception
+      when sqlstate '22023' then
+        rejection_seen := true;
+        error_message := sqlerrm;
+    end;
+    if not rejection_seen
+      or error_message <> 'validation_error: target_id must be a safe non-secret identifier'
+      or pg_catalog.strpos(error_message, bad_target_id) > 0 then
+      raise exception 'unsafe target identifier was not rejected safely';
+    end if;
+  end loop;
 
   rejection_seen := false;
   begin
