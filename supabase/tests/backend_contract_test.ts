@@ -297,6 +297,343 @@ Deno.test("public daily migration source declares live filtering and the cell co
   );
 });
 
+Deno.test("daily summary migration adds page-independent filtered rollups and exact ACL", async () => {
+  const sql = compact(
+    await read(
+      "migrations/20260810010000_usage_dashboard_drilldown.sql",
+    ),
+  );
+
+  assert.match(
+    sql,
+    /create or replace function public\.get_public_daily_usage\(\s*p_from date, p_to date, p_search text, p_page integer, p_page_size integer\s*\)/,
+  );
+  assert.match(sql, /security definer set search_path = pg_catalog, public/);
+
+  const dailyFunctionStart = sql.indexOf(
+    "create or replace function public.get_public_daily_usage",
+  );
+  const hourlyFunctionStart = sql.indexOf(
+    "create or replace function public.get_public_hourly_usage",
+  );
+  const dailyBody = sql.slice(dailyFunctionStart, hourlyFunctionStart);
+  assert.match(dailyBody, /eligible_batches as not materialized \(/);
+
+  const eligibleBatchesIndex = sql.indexOf(
+    "eligible_batches as not materialized (",
+  );
+  const filteredUsageIndex = sql.indexOf("filtered_usage as (");
+  const summaryValuesIndex = sql.indexOf("summary_values as (");
+  const dayValuesIndex = sql.indexOf("day_values as (");
+  const dailyTotalValuesIndex = sql.indexOf("daily_total_values as (");
+  const nameTotalsIndex = sql.indexOf("name_totals as (");
+  const pagedNamesIndex = sql.indexOf("paged_names as (");
+  const cellValuesIndex = sql.indexOf("cell_values as (");
+
+  assert.ok(eligibleBatchesIndex >= 0, "missing eligible_batches CTE");
+  assert.ok(
+    filteredUsageIndex > eligibleBatchesIndex,
+    "filtered_usage must follow eligible_batches",
+  );
+  assert.ok(
+    summaryValuesIndex > filteredUsageIndex,
+    "summary must follow filtered_usage",
+  );
+  assert.ok(dayValuesIndex > summaryValuesIndex, "days must follow summary");
+  assert.ok(
+    dailyTotalValuesIndex > dayValuesIndex,
+    "daily totals must follow generated days",
+  );
+  assert.ok(
+    nameTotalsIndex > dailyTotalValuesIndex,
+    "name totals must follow page-independent rollups",
+  );
+  assert.ok(pagedNamesIndex > nameTotalsIndex, "pagination must follow names");
+  assert.ok(cellValuesIndex > pagedNamesIndex, "cells must follow pagination");
+
+  const eligibleBatches = sql.slice(
+    eligibleBatchesIndex,
+    filteredUsageIndex,
+  );
+  for (
+    const column of [
+      "event_id",
+      "usage_date",
+      "hour_start",
+      "ingested_at",
+      "usage_precision",
+    ]
+  ) {
+    assert.ok(
+      eligibleBatches.includes(`b.${column}`),
+      `eligible_batches is missing column: ${column}`,
+    );
+  }
+  assert.ok(
+    eligibleBatches.includes("from public.log_upload_batches as b"),
+  );
+  assert.ok(
+    eligibleBatches.includes("where b.is_test = _using_test_data"),
+  );
+
+  const filteredUsage = sql.slice(filteredUsageIndex, summaryValuesIndex);
+  assert.ok(filteredUsage.includes("b.ingested_at"));
+  assert.ok(
+    filteredUsage.includes(
+      "from public.log_upload_usage as u join eligible_batches as b on b.event_id = u.event_id",
+    ),
+  );
+  for (
+    const predicate of [
+      "b.usage_date between p_from and p_to",
+      "u.key_name <> 'unauthenticated'",
+      "u.key_name !~* '^key-[0-9a-f]{12}$'",
+      "pg_catalog.btrim(u.key_name) <> ''",
+      "_search = ''",
+      "pg_catalog.replace(_search, e'\\\\', e'\\\\\\\\')",
+      "'%', e'\\\\%'",
+      "'_', e'\\\\_'",
+      "escape e'\\\\'",
+    ]
+  ) {
+    assert.ok(
+      filteredUsage.includes(predicate),
+      `filtered_usage is missing predicate: ${predicate}`,
+    );
+  }
+
+  const summaryValues = sql.slice(summaryValuesIndex, dayValuesIndex);
+  const dailyTotalValues = sql.slice(dailyTotalValuesIndex, nameTotalsIndex);
+  assert.ok(summaryValues.includes("from filtered_usage"));
+  assert.ok(dailyTotalValues.includes("left join filtered_usage"));
+  assert.doesNotMatch(summaryValues, /paged_names/);
+  assert.doesNotMatch(dailyTotalValues, /paged_names/);
+  assert.match(
+    summaryValues,
+    /pg_catalog\.count\(distinct filtered\.event_id\) as archive_count/,
+  );
+  assert.match(
+    summaryValues,
+    /pg_catalog\.count\(distinct filtered\.hour_start\) as archive_hour_count/,
+  );
+  assert.match(
+    dailyTotalValues,
+    /pg_catalog\.count\(distinct filtered\.event_id\) as archive_count/,
+  );
+  assert.match(
+    dailyTotalValues,
+    /pg_catalog\.count\(distinct filtered\.hour_start\) as archive_hour_count/,
+  );
+  assert.match(sql, /\(p_to - p_from \+ 1\)::integer as day_count/);
+  assert.match(
+    sql,
+    /left join filtered_usage as filtered on filtered\.usage_date = days\.usage_date/,
+  );
+
+  for (
+    const key of [
+      "summary",
+      "daily_totals",
+      "source_bytes",
+      "archive_count",
+      "archive_hour_count",
+      "active_key_count",
+      "day_count",
+      "source_count",
+    ]
+  ) {
+    assert.ok(sql.includes(`'${key}'`), `missing response key: ${key}`);
+  }
+  assert.match(sql, /'source_bytes', summary\.source_bytes::text/);
+  assert.match(sql, /'source_bytes', totals\.source_bytes::text/);
+  assert.match(sql, /'source_count', cells\.source_count::text/);
+  assert.match(
+    sql,
+    /coalesce\(\s*pg_catalog\.sum\(filtered\.source_count\),\s*0::numeric\s*\) as source_count/,
+  );
+  assert.match(
+    sql,
+    /pg_catalog\.count\(distinct filtered\.event_id\) as batch_count/,
+  );
+  const latestSyncAtIndex = sql.indexOf("'latest_sync_at'");
+  assert.ok(latestSyncAtIndex > cellValuesIndex, "missing latest_sync_at");
+  const nextFunctionIndex = sql.indexOf(
+    "create or replace function public.get_public_hourly_usage",
+    latestSyncAtIndex,
+  );
+  const latestSyncAt = sql.slice(
+    latestSyncAtIndex,
+    nextFunctionIndex < 0 ? undefined : nextFunctionIndex,
+  );
+  assert.ok(latestSyncAt.includes("from eligible_batches as batches"));
+  assert.doesNotMatch(latestSyncAt, /public\.log_upload_batches/);
+
+  assert.match(
+    sql,
+    /revoke all on function public\.get_public_daily_usage\(date, date, text, integer, integer\) from public, service_role/,
+  );
+  assert.match(
+    sql,
+    /revoke all on function public\.get_public_daily_usage\(date, date, text, integer, integer\) from anon, authenticated/,
+  );
+  const grants = sql.match(
+    /grant execute on function public\.get_public_daily_usage\(date, date, text, integer, integer\) to [^;]+/g,
+  ) ?? [];
+  assert.deepEqual(grants, [
+    "grant execute on function public.get_public_daily_usage(date, date, text, integer, integer) to anon, authenticated",
+  ]);
+});
+
+Deno.test("hourly drill-down migration restricts exact-key archive metrics and ACL", async () => {
+  const sql = compact(
+    await read(
+      "migrations/20260810010000_usage_dashboard_drilldown.sql",
+    ),
+  );
+  const schemaSql = compact(
+    await read("migrations/20260808000000_log_usage.sql"),
+  );
+
+  assert.match(
+    sql,
+    /create index log_upload_batches_mode_date_hour_event_idx on public\.log_upload_batches \(is_test, usage_date, hour_start, event_id\)/,
+  );
+  assert.match(
+    sql,
+    /create index log_upload_batches_mode_ingested_at_idx on public\.log_upload_batches \(is_test, ingested_at desc\)/,
+  );
+  assert.match(
+    sql,
+    /create index log_upload_batches_mode_hour_event_timezone_idx on public\.log_upload_batches \(is_test, hour_start desc, event_id desc\) include \(timezone\)/,
+  );
+  assert.match(
+    sql,
+    /create or replace function public\.get_public_hourly_usage\(\s*p_date date, p_key_name text\s*\)/,
+  );
+  assert.match(sql, /security definer set search_path = pg_catalog, public/);
+  assert.match(
+    sql,
+    /grant execute on function public\.get_public_hourly_usage\(date, text\) to anon, authenticated/,
+  );
+
+  const hourlyBody = sql.slice(
+    sql.indexOf("create or replace function public.get_public_hourly_usage"),
+  );
+  assert.match(hourlyBody, /eligible_batches as not materialized \(/);
+  assert.match(
+    hourlyBody,
+    /if p_date is null then raise exception using errcode = '22023', message = 'validation_error: date is required'/,
+  );
+  assert.match(
+    hourlyBody,
+    /if p_key_name is null or pg_catalog\.btrim\(p_key_name\) = '' then raise exception using errcode = '22023', message = 'validation_error: key_name is required'/,
+  );
+  assert.match(
+    hourlyBody,
+    /if pg_catalog\.char_length\(pg_catalog\.btrim\(p_key_name\)\) > 48 then raise exception using errcode = '22023', message = 'validation_error: key_name must not exceed 48 characters'/,
+  );
+  assert.match(
+    hourlyBody,
+    /not exists \( select 1 from public\.log_upload_batches where is_test = false \)/,
+  );
+  assert.match(hourlyBody, /where b\.is_test = _using_test_data/);
+  assert.match(
+    hourlyBody,
+    /where b\.is_test = _using_test_data order by b\.hour_start desc, b\.event_id desc limit 1/,
+  );
+  assert.match(hourlyBody, /_timezone := coalesce\(_timezone, 'utc'\)/);
+  assert.match(hourlyBody, /b\.usage_date = p_date/);
+  assert.match(hourlyBody, /u\.key_name = p_key_name/);
+  assert.doesNotMatch(
+    hourlyBody,
+    /u\.key_name\s*=\s*(?:pg_catalog\.)?btrim\(p_key_name\)/,
+  );
+  for (
+    const predicate of [
+      "u.key_name <> 'unauthenticated'",
+      "u.key_name !~* '^key-[0-9a-f]{12}$'",
+      "pg_catalog.btrim(u.key_name) <> ''",
+    ]
+  ) {
+    assert.ok(
+      hourlyBody.includes(predicate),
+      `hourly RPC is missing public-name filter: ${predicate}`,
+    );
+  }
+  assert.doesNotMatch(hourlyBody, /generate_series/);
+  assert.match(hourlyBody, /group by filtered\.hour_start/);
+  assert.match(
+    hourlyBody,
+    /pg_catalog\.jsonb_agg\(hour_json order by hour_start\)/,
+  );
+
+  assert.match(
+    hourlyBody,
+    /coalesce\(\s*pg_catalog\.sum\(filtered\.source_count\),\s*0::numeric\s*\) as source_count/,
+  );
+  assert.match(
+    hourlyBody,
+    /coalesce\(\s*pg_catalog\.sum\(filtered\.source_bytes\),\s*0::numeric\s*\) as source_bytes/,
+  );
+  for (const provider of ["codex", "fable5", "grok45"]) {
+    assert.match(
+      hourlyBody,
+      new RegExp(
+        `pg_catalog\\.sum\\(filtered\\.source_bytes\\) filter \\(where filtered\\.provider = '${provider}'\\)`,
+      ),
+    );
+  }
+  assert.match(
+    schemaSql,
+    /provider in \('codex', 'fable5', 'grok45'\)/,
+  );
+  assert.match(
+    hourlyBody,
+    /pg_catalog\.count\(distinct filtered\.event_id\) as batch_count/,
+  );
+  assert.match(
+    hourlyBody,
+    /pg_catalog\.bool_and\( filtered\.usage_precision = 'exact' and filtered\.jsonl_bytes is not null \) as all_exact/,
+  );
+  assert.match(
+    hourlyBody,
+    /pg_catalog\.jsonb_build_object\( 'hour_start', pg_catalog\.to_char\(hours\.hour_start, 'yyyy-mm-dd"t"hh24:mi:sstzh:tzm'\), 'source_count', hours\.source_count::text, 'source_bytes', hours\.source_bytes::text, 'gpt_source_bytes', hours\.gpt_source_bytes::text, 'claude_source_bytes', hours\.claude_source_bytes::text, 'grok_source_bytes', hours\.grok_source_bytes::text, 'batch_count', hours\.batch_count, 'usage_precision', case when hours\.all_exact then 'exact' else 'batch_only' end \) as hour_json/,
+  );
+  assert.match(
+    hourlyBody,
+    /pg_catalog\.jsonb_build_object\( 'metric_basis', 'source_bytes', 'timezone', _timezone, 'date', p_date, 'key_name', p_key_name, 'latest_sync_at', \(select pg_catalog\.max\(batches\.ingested_at\) from eligible_batches as batches\), 'hours', coalesce\(\(select pg_catalog\.jsonb_agg\(hour_json order by hour_start\) from rendered_hours\), '\[\]'::jsonb\) \)/,
+  );
+
+  for (
+    const forbidden of [
+      "jsonl_bytes",
+      "compressed_bytes",
+      "object_key",
+      "archive_sha256",
+      "manifest_sha256",
+    ]
+  ) {
+    assert.ok(
+      !hourlyBody.includes(`'${forbidden}'`),
+      `hourly RPC exposes ${forbidden}`,
+    );
+  }
+  assert.match(
+    hourlyBody,
+    /revoke all on function public\.get_public_hourly_usage\(date, text\) from public, service_role/,
+  );
+  assert.match(
+    hourlyBody,
+    /revoke all on function public\.get_public_hourly_usage\(date, text\) from anon, authenticated/,
+  );
+  const grants = hourlyBody.match(
+    /grant execute on function public\.get_public_hourly_usage\(date, text\) to [^;]+/g,
+  ) ?? [];
+  assert.deepEqual(grants, [
+    "grant execute on function public.get_public_hourly_usage(date, text) to anon, authenticated",
+  ]);
+});
+
 Deno.test("public daily response example distinguishes source bytes from optional JSONL", async () => {
   const example = JSON.parse(await read("examples/daily-response.json"));
   const cell = example.cells[0];
@@ -377,6 +714,7 @@ Deno.test("SQL assertion source declares behavior and privilege coverage", async
   assert.match(assertions, /usage_precision/);
   assert.match(assertions, /batch_only/);
   assert.match(assertions, /source_bytes/);
+  assert.match(assertions, /source_count/);
   assert.match(assertions, /gpt_source_bytes/);
   assert.match(assertions, /claude_source_bytes/);
   assert.match(assertions, /grok_source_bytes/);
@@ -388,6 +726,38 @@ Deno.test("SQL assertion source declares behavior and privilege coverage", async
   assert.match(assertions, /2147483647/);
   assert.match(assertions, /9007199254740993/);
   assert.match(assertions, /literal search failed/);
+  assert.match(assertions, /daily summary is incorrect/);
+  assert.match(assertions, /daily totals are incorrect/);
+  assert.match(assertions, /daily rollups changed across pages/);
+  assert.match(assertions, /daily source_count lost exact precision/);
+  assert.match(assertions, /filtered private fixture rows were modified/);
+  assert.match(assertions, /pg_catalog\.pg_indexes/);
+  assert.match(assertions, /log_upload_batches_mode_date_hour_event_idx/);
+  assert.match(assertions, /log_upload_batches_mode_ingested_at_idx/);
+  assert.match(assertions, /log_upload_batches_mode_hour_event_timezone_idx/);
+  assert.match(assertions, /get_public_hourly_usage/);
+  assert.match(
+    assertions,
+    /public unexpectedly has hourly dashboard rpc execute/,
+  );
+  assert.match(
+    assertions,
+    /service_role unexpectedly has hourly dashboard rpc execute/,
+  );
+  assert.match(assertions, /hourly rows are not sparse and ascending/);
+  assert.match(assertions, /hourly batch-only provider totals are incorrect/);
+  assert.match(assertions, /hourly exact provider totals are incorrect/);
+  assert.match(assertions, /hourly provider bytes do not sum to source_bytes/);
+  assert.match(assertions, /hidden direct key leaked hourly rows/);
+  assert.match(assertions, /hourly exact key matching was rewritten/);
+  assert.match(assertions, /hourly null date validation was not raised/);
+  assert.match(assertions, /hourly null key validation was not raised/);
+  assert.match(assertions, /hourly empty key validation was not raised/);
+  assert.match(assertions, /hourly overlong key validation was not raised/);
+  assert.match(assertions, /hourly live metadata is not current-mode global/);
+  assert.match(assertions, /hourly test fallback metadata is incorrect/);
+  assert.match(assertions, /live batches remain before hourly test fallback/);
+  assert.match(assertions, /lost a public usage rpc grant/);
   for (
     const marker of [
       "private fallback rows were modified",

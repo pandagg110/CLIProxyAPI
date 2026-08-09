@@ -1,5 +1,7 @@
 begin;
 
+set local timezone = 'UTC';
+
 do $assert_privileges$
 declare
   role_name text;
@@ -70,8 +72,87 @@ begin
   ) then
     raise exception 'service_role unexpectedly has public dashboard RPC execute';
   end if;
+  if not pg_catalog.has_function_privilege(
+    'anon',
+    'public.get_public_hourly_usage(date,text)',
+    'execute'
+  ) or not pg_catalog.has_function_privilege(
+    'authenticated',
+    'public.get_public_hourly_usage(date,text)',
+    'execute'
+  ) then
+    raise exception 'hourly dashboard RPC is missing an intended grant';
+  end if;
+  if pg_catalog.has_function_privilege(
+    'service_role',
+    'public.get_public_hourly_usage(date,text)',
+    'execute'
+  ) then
+    raise exception 'service_role unexpectedly has hourly dashboard RPC execute';
+  end if;
+  if exists (
+    select 1
+    from pg_catalog.pg_proc as functions
+    join pg_catalog.pg_namespace as namespaces on namespaces.oid = functions.pronamespace
+    cross join lateral pg_catalog.aclexplode(
+      coalesce(
+        functions.proacl,
+        pg_catalog.acldefault('f', functions.proowner)
+      )
+    ) as privileges
+    where namespaces.nspname = 'public'
+      and functions.proname = 'get_public_hourly_usage'
+      and privileges.grantee = 0
+      and privileges.privilege_type = 'EXECUTE'
+  ) then
+    raise exception 'PUBLIC unexpectedly has hourly dashboard RPC execute';
+  end if;
 end;
 $assert_privileges$;
+
+do $assert_hourly_index$
+declare
+  index_definition text;
+  latest_index_definition text;
+  timezone_index_definition text;
+begin
+  select indexes.indexdef
+  into index_definition
+  from pg_catalog.pg_indexes as indexes
+  where indexes.schemaname = 'public'
+    and indexes.tablename = 'log_upload_batches'
+    and indexes.indexname = 'log_upload_batches_mode_date_hour_event_idx';
+
+  if index_definition is null
+    or index_definition !~ '\(is_test, usage_date, hour_start, event_id\)$' then
+    raise exception 'hourly archive index columns are incorrect: %', index_definition;
+  end if;
+
+  select indexes.indexdef
+  into latest_index_definition
+  from pg_catalog.pg_indexes as indexes
+  where indexes.schemaname = 'public'
+    and indexes.tablename = 'log_upload_batches'
+    and indexes.indexname = 'log_upload_batches_mode_ingested_at_idx';
+
+  if latest_index_definition is null
+    or latest_index_definition !~ '\(is_test, ingested_at DESC\)$' then
+    raise exception 'latest sync index columns are incorrect: %', latest_index_definition;
+  end if;
+
+  select indexes.indexdef
+  into timezone_index_definition
+  from pg_catalog.pg_indexes as indexes
+  where indexes.schemaname = 'public'
+    and indexes.tablename = 'log_upload_batches'
+    and indexes.indexname = 'log_upload_batches_mode_hour_event_timezone_idx';
+
+  if timezone_index_definition is null
+    or timezone_index_definition !~ '\(is_test, hour_start DESC, event_id DESC\) INCLUDE \(timezone\)$' then
+    raise exception 'timezone lookup index columns are incorrect: %', timezone_index_definition;
+  end if;
+end;
+$assert_hourly_index$;
 
 do $assert_seed$
 declare
@@ -917,8 +998,10 @@ begin
     'names',
     'days',
     'cells',
+    'summary',
+    'daily_totals',
     'latest_sync_at'
-  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(daily)) <> 10 then
+  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(daily)) <> 12 then
     raise exception 'public response fields are incorrect: %', daily;
   end if;
   if daily ? 'total_names' or daily ? 'last_synced_at' then
@@ -957,6 +1040,7 @@ begin
     or cell -> 'gpt_source_bytes' is distinct from '"15"'::jsonb
     or cell -> 'claude_source_bytes' is distinct from '"20"'::jsonb
     or cell -> 'grok_source_bytes' is distinct from '"30"'::jsonb
+    or cell -> 'source_count' is distinct from '"4"'::jsonb
     or cell -> 'usage_precision' is distinct from '"exact"'::jsonb
     or cell -> 'jsonl_bytes' is distinct from '"650"'::jsonb
     or cell -> 'gpt_bytes' is distinct from '"150"'::jsonb
@@ -972,13 +1056,14 @@ begin
     'gpt_source_bytes',
     'claude_source_bytes',
     'grok_source_bytes',
+    'source_count',
     'usage_precision',
     'jsonl_bytes',
     'gpt_bytes',
     'claude_bytes',
     'grok_bytes',
     'batch_count'
-  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(cell)) <> 12 then
+  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(cell)) <> 13 then
     raise exception 'public cell fields are incorrect: %', cell;
   end if;
 
@@ -1140,10 +1225,410 @@ begin
     raise exception 'test rows were not hidden after live ingestion: %', daily;
   end if;
   if daily #>> '{pagination,total}' <> '1'
-    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","source_bytes":"40","usage_precision":"exact","jsonl_bytes":"400","batch_count":1}]'::jsonb then
+    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","source_bytes":"40","source_count":"1","usage_precision":"exact","jsonl_bytes":"400","batch_count":1}]'::jsonb then
     raise exception 'live public response is incorrect: %', daily;
   end if;
 end;
 $assert_behavior$;
+
+do $assert_daily_summary$
+declare
+  fixture record;
+  page_one jsonb;
+  page_two jsonb;
+  search_daily jsonb;
+  alpha_cell jsonb;
+  large_alpha_cell jsonb;
+  hourly jsonb;
+  missing_hourly jsonb;
+  hour_value jsonb;
+  summed_daily_source_bytes numeric;
+  forbidden_field text;
+  validation_seen boolean;
+begin
+  for fixture in
+    select values.*
+    from (values
+      ('sql-daily-alpha-1', '2026-02-10T00:00:00Z', date '2026-02-10', 'alpha', 'codex', 3::bigint, 100::bigint, false, 'exact'),
+      ('sql-daily-alpha-2', '2026-02-10T00:00:00Z', date '2026-02-10', 'alpha', 'fable5', 2::bigint, 200::bigint, false, 'exact'),
+      ('sql-daily-alpha-3', '2026-02-10T00:00:00Z', date '2026-02-10', 'alpha', 'grok45', 4::bigint, 400::bigint, false, 'batch_only'),
+      ('sql-daily-alpha-4', '2026-02-10T03:00:00Z', date '2026-02-10', 'alpha', 'codex', 1::bigint, 30::bigint, false, 'exact'),
+      ('sql-daily-beta-1', '2026-02-10T02:00:00Z', date '2026-02-10', 'beta', 'codex', 4::bigint, 220::bigint, false, 'exact'),
+      ('sql-daily-alpha-5', '2026-02-12T00:00:00Z', date '2026-02-12', 'alpha', 'codex', 9007199254740993::bigint, 600::bigint, false, 'exact'),
+      ('sql-daily-hidden-live', '2026-02-10T03:00:00Z', date '2026-02-10', 'unauthenticated', 'codex', 6::bigint, 7000::bigint, false, 'exact'),
+      ('sql-daily-hidden-test', '2026-02-10T04:00:00Z', date '2026-02-10', 'alpha', 'codex', 7::bigint, 9000::bigint, true, 'exact')
+    ) as values(event_id, hour_start, usage_date, key_name, provider, source_count, source_bytes, is_test, usage_precision)
+  loop
+    perform public.ingest_log_usage_v1(
+      pg_catalog.jsonb_build_object(
+        'schema_version', 1,
+        'event_id', fixture.event_id,
+        'target_id', 'assertions',
+        'object_key', 'assertions/' || fixture.event_id || '.jsonl.zst',
+        'archive_sha256', pg_catalog.repeat('a', 64),
+        'manifest_sha256', pg_catalog.repeat('b', 64),
+        'hour_start', fixture.hour_start,
+        'timezone', 'UTC',
+        'usage_date', fixture.usage_date,
+        'source_count', fixture.source_count,
+        'source_bytes', fixture.source_bytes,
+        'jsonl_bytes', fixture.source_bytes * 10,
+        'compressed_bytes', fixture.source_bytes,
+        'usage_precision', fixture.usage_precision,
+        'test_mode', fixture.is_test,
+        'usage', pg_catalog.jsonb_build_array(
+          pg_catalog.jsonb_build_object(
+            'key_name', fixture.key_name,
+            'provider', fixture.provider,
+            'source_count', fixture.source_count,
+            'source_bytes', fixture.source_bytes,
+            'jsonl_bytes', case
+              when fixture.usage_precision = 'exact' then fixture.source_bytes * 10
+              else null
+            end
+          )
+        )
+      ),
+      pg_catalog.repeat('c', 64)
+    );
+  end loop;
+
+  if (
+    select pg_catalog.count(*)
+    from public.log_upload_batches
+    where event_id like 'sql-daily-%'
+  ) <> 8 or (
+    select pg_catalog.count(*)
+    from public.log_upload_usage
+    where event_id like 'sql-daily-%'
+  ) <> 8 or not exists (
+    select 1
+    from public.log_upload_batches
+    where event_id = 'sql-daily-hidden-live'
+      and is_test = false
+  ) or not exists (
+    select 1
+    from public.log_upload_batches
+    where event_id = 'sql-daily-hidden-test'
+      and is_test = true
+  ) then
+    raise exception 'filtered private fixture rows were modified';
+  end if;
+
+  page_one := public.get_public_daily_usage(
+    date '2026-02-10',
+    date '2026-02-12',
+    '',
+    1,
+    1
+  );
+  page_two := public.get_public_daily_usage(
+    date '2026-02-10',
+    date '2026-02-12',
+    '',
+    2,
+    1
+  );
+
+  if page_one -> 'summary' is distinct from '{"source_bytes":"1550","archive_count":6,"archive_hour_count":4,"active_key_count":2,"day_count":3}'::jsonb then
+    raise exception 'daily summary is incorrect: %', page_one;
+  end if;
+  if page_one -> 'daily_totals' is distinct from '[{"date":"2026-02-10","source_bytes":"950","archive_count":5,"archive_hour_count":3,"active_key_count":2},{"date":"2026-02-11","source_bytes":"0","archive_count":0,"archive_hour_count":0,"active_key_count":0},{"date":"2026-02-12","source_bytes":"600","archive_count":1,"archive_hour_count":1,"active_key_count":1}]'::jsonb then
+    raise exception 'daily totals are incorrect: %', page_one;
+  end if;
+  if page_two -> 'summary' is distinct from page_one -> 'summary'
+    or page_two -> 'daily_totals' is distinct from page_one -> 'daily_totals' then
+    raise exception 'daily rollups changed across pages: page one %, page two %', page_one, page_two;
+  end if;
+
+  select values.value
+  into alpha_cell
+  from pg_catalog.jsonb_array_elements(page_one -> 'cells') as values(value)
+  where values.value ->> 'date' = '2026-02-10'
+    and values.value ->> 'key_name' = 'alpha';
+  if alpha_cell -> 'source_count' is distinct from '"10"'::jsonb then
+    raise exception 'daily alpha source_count is incorrect: %', page_one;
+  end if;
+
+  select values.value
+  into large_alpha_cell
+  from pg_catalog.jsonb_array_elements(page_one -> 'cells') as values(value)
+  where values.value ->> 'date' = '2026-02-12'
+    and values.value ->> 'key_name' = 'alpha';
+  if large_alpha_cell -> 'source_count' is distinct from '"9007199254740993"'::jsonb then
+    raise exception 'daily source_count lost exact precision: %', page_one;
+  end if;
+
+  select pg_catalog.sum((values.value ->> 'source_bytes')::numeric)
+  into summed_daily_source_bytes
+  from pg_catalog.jsonb_array_elements(page_one -> 'daily_totals') as values(value);
+  if summed_daily_source_bytes is distinct from (page_one #>> '{summary,source_bytes}')::numeric then
+    raise exception 'daily source bytes do not sum to summary: %', page_one;
+  end if;
+
+  search_daily := public.get_public_daily_usage(
+    date '2026-02-10',
+    date '2026-02-12',
+    'alpha',
+    1,
+    1
+  );
+  if search_daily -> 'summary' is distinct from '{"source_bytes":"1330","archive_count":5,"archive_hour_count":3,"active_key_count":1,"day_count":3}'::jsonb
+    or search_daily -> 'daily_totals' is distinct from '[{"date":"2026-02-10","source_bytes":"730","archive_count":4,"archive_hour_count":2,"active_key_count":1},{"date":"2026-02-11","source_bytes":"0","archive_count":0,"archive_hour_count":0,"active_key_count":0},{"date":"2026-02-12","source_bytes":"600","archive_count":1,"archive_hour_count":1,"active_key_count":1}]'::jsonb then
+    raise exception 'filtered daily summary is incorrect: %', search_daily;
+  end if;
+
+  hourly := public.get_public_hourly_usage(date '2026-02-10', 'alpha');
+  if not hourly ?& array[
+    'metric_basis',
+    'timezone',
+    'date',
+    'key_name',
+    'latest_sync_at',
+    'hours'
+  ] or (
+    select pg_catalog.count(*)
+    from pg_catalog.jsonb_object_keys(hourly)
+  ) <> 6 then
+    raise exception 'hourly top-level fields are incorrect: %', hourly;
+  end if;
+  if not hourly @> '{"metric_basis":"source_bytes","timezone":"UTC","date":"2026-02-10","key_name":"alpha"}'::jsonb
+    or pg_catalog.jsonb_typeof(hourly -> 'latest_sync_at') is distinct from 'string' then
+    raise exception 'hourly top-level values are incorrect: %', hourly;
+  end if;
+  if (
+    select pg_catalog.jsonb_agg(values.value -> 'hour_start' order by values.ordinal)
+    from pg_catalog.jsonb_array_elements(hourly -> 'hours')
+      with ordinality as values(value, ordinal)
+  ) is distinct from '["2026-02-10T00:00:00+00:00","2026-02-10T03:00:00+00:00"]'::jsonb then
+    raise exception 'hourly rows are not sparse and ascending: %', hourly;
+  end if;
+
+  select values.value
+  into hour_value
+  from pg_catalog.jsonb_array_elements(hourly -> 'hours') as values(value)
+  where values.value ->> 'hour_start' = '2026-02-10T00:00:00+00:00';
+  if hour_value is distinct from '{"hour_start":"2026-02-10T00:00:00+00:00","source_count":"9","source_bytes":"700","gpt_source_bytes":"100","claude_source_bytes":"200","grok_source_bytes":"400","batch_count":3,"usage_precision":"batch_only"}'::jsonb then
+    raise exception 'hourly batch-only provider totals are incorrect: %', hourly;
+  end if;
+
+  select values.value
+  into hour_value
+  from pg_catalog.jsonb_array_elements(hourly -> 'hours') as values(value)
+  where values.value ->> 'hour_start' = '2026-02-10T03:00:00+00:00';
+  if hour_value is distinct from '{"hour_start":"2026-02-10T03:00:00+00:00","source_count":"1","source_bytes":"30","gpt_source_bytes":"30","claude_source_bytes":"0","grok_source_bytes":"0","batch_count":1,"usage_precision":"exact"}'::jsonb then
+    raise exception 'hourly exact provider totals are incorrect: %', hourly;
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_array_elements(hourly -> 'hours') as values(value)
+    where (values.value ->> 'source_bytes')::numeric is distinct from
+      (values.value ->> 'gpt_source_bytes')::numeric
+      + (values.value ->> 'claude_source_bytes')::numeric
+      + (values.value ->> 'grok_source_bytes')::numeric
+  ) then
+    raise exception 'hourly provider bytes do not sum to source_bytes: %', hourly;
+  end if;
+
+  foreach forbidden_field in array array[
+    'jsonl_bytes',
+    'compressed_bytes',
+    'object_key',
+    'archive_sha256',
+    'manifest_sha256'
+  ]
+  loop
+    if pg_catalog.strpos(hourly::text, '"' || forbidden_field || '"') > 0 then
+      raise exception 'hourly response exposes restricted field %: %', forbidden_field, hourly;
+    end if;
+  end loop;
+
+  missing_hourly := public.get_public_hourly_usage(date '2026-02-11', 'alpha');
+  if missing_hourly -> 'hours' is distinct from '[]'::jsonb then
+    raise exception 'missing hourly date fabricated rows: %', missing_hourly;
+  end if;
+  missing_hourly := public.get_public_hourly_usage(date '2026-02-10', 'unauthenticated');
+  if missing_hourly -> 'hours' is distinct from '[]'::jsonb then
+    raise exception 'hidden direct key leaked hourly rows: %', missing_hourly;
+  end if;
+  missing_hourly := public.get_public_hourly_usage(date '2026-02-10', ' alpha ');
+  if missing_hourly -> 'hours' is distinct from '[]'::jsonb
+    or missing_hourly -> 'key_name' is distinct from '" alpha "'::jsonb then
+    raise exception 'hourly exact key matching was rewritten: %', missing_hourly;
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.get_public_hourly_usage(null::date, 'alpha');
+  exception
+    when sqlstate '22023' then
+      validation_seen := sqlerrm like 'validation_error:%';
+  end;
+  if not validation_seen then
+    raise exception 'hourly null date validation was not raised';
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.get_public_hourly_usage(date '2026-02-10', null::text);
+  exception
+    when sqlstate '22023' then
+      validation_seen := sqlerrm like 'validation_error:%';
+  end;
+  if not validation_seen then
+    raise exception 'hourly null key validation was not raised';
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.get_public_hourly_usage(date '2026-02-10', '   ');
+  exception
+    when sqlstate '22023' then
+      validation_seen := sqlerrm like 'validation_error:%';
+  end;
+  if not validation_seen then
+    raise exception 'hourly empty key validation was not raised';
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.get_public_hourly_usage(
+      date '2026-02-10',
+      pg_catalog.repeat('x', 49)
+    );
+  exception
+    when sqlstate '22023' then
+      validation_seen := sqlerrm like 'validation_error:%';
+  end;
+  if not validation_seen then
+    raise exception 'hourly overlong key validation was not raised';
+  end if;
+end;
+$assert_daily_summary$;
+
+do $assert_hourly_mode_metadata$
+declare
+  fixture record;
+  hourly jsonb;
+  role_name text;
+  table_name text;
+begin
+  update public.log_upload_batches
+  set ingested_at = timestamptz '2000-01-01T00:00:00Z';
+
+  for fixture in
+    select values.*
+    from (values
+      ('sql-hourly-live-query', '2026-03-01T00:00:00Z', date '2026-03-01', 'UTC', 'mode-live-alpha', false, 11::bigint, timestamptz '2040-01-01T00:00:00Z'),
+      ('sql-hourly-live-latest', '2026-03-02T00:00:00+09:00', date '2026-03-02', 'Asia/Tokyo', 'mode-live-latest', false, 12::bigint, timestamptz '2040-01-02T03:04:05Z'),
+      ('sql-hourly-test-query', '2027-01-01T00:00:00Z', date '2027-01-01', 'UTC', 'mode-test-alpha', true, 21::bigint, timestamptz '2042-01-01T00:00:00Z'),
+      ('sql-hourly-test-latest', '2027-01-02T00:00:00-08:00', date '2027-01-02', 'America/Los_Angeles', 'mode-test-latest', true, 22::bigint, timestamptz '2042-01-02T03:04:05Z')
+    ) as values(event_id, hour_start, usage_date, timezone, key_name, is_test, source_bytes, ingested_at)
+  loop
+    perform public.ingest_log_usage_v1(
+      pg_catalog.jsonb_build_object(
+        'schema_version', 1,
+        'event_id', fixture.event_id,
+        'target_id', 'assertions',
+        'object_key', 'assertions/' || fixture.event_id || '.jsonl.zst',
+        'archive_sha256', pg_catalog.repeat('a', 64),
+        'manifest_sha256', pg_catalog.repeat('b', 64),
+        'hour_start', fixture.hour_start,
+        'timezone', fixture.timezone,
+        'usage_date', fixture.usage_date,
+        'source_count', 1,
+        'source_bytes', fixture.source_bytes,
+        'jsonl_bytes', fixture.source_bytes * 10,
+        'compressed_bytes', fixture.source_bytes,
+        'test_mode', fixture.is_test,
+        'usage', pg_catalog.jsonb_build_array(
+          pg_catalog.jsonb_build_object(
+            'key_name', fixture.key_name,
+            'provider', 'codex',
+            'source_count', 1,
+            'source_bytes', fixture.source_bytes,
+            'jsonl_bytes', fixture.source_bytes * 10
+          )
+        )
+      ),
+      pg_catalog.repeat('d', 64)
+    );
+
+    update public.log_upload_batches
+    set ingested_at = fixture.ingested_at
+    where event_id = fixture.event_id;
+  end loop;
+
+  hourly := public.get_public_hourly_usage(
+    date '2026-03-01',
+    'mode-live-alpha'
+  );
+  if hourly ->> 'latest_sync_at' is distinct from '2040-01-02T03:04:05+00:00'
+    or hourly ->> 'timezone' is distinct from 'Asia/Tokyo'
+    or not (hourly -> 'hours') @> '[{"source_bytes":"11","hour_start":"2026-03-01T00:00:00+00:00"}]'::jsonb then
+    raise exception 'hourly live metadata is not current-mode global: %', hourly;
+  end if;
+
+  delete from public.log_upload_batches
+  where is_test = false;
+
+  if exists (
+    select 1
+    from public.log_upload_batches
+    where is_test = false
+  ) then
+    raise exception 'live batches remain before hourly test fallback';
+  end if;
+
+  hourly := public.get_public_hourly_usage(
+    date '2027-01-01',
+    'mode-test-alpha'
+  );
+  if hourly ->> 'latest_sync_at' is distinct from '2042-01-02T03:04:05+00:00'
+    or hourly ->> 'timezone' is distinct from 'America/Los_Angeles'
+    or not (hourly -> 'hours') @> '[{"source_bytes":"21","hour_start":"2027-01-01T00:00:00+00:00"}]'::jsonb then
+    raise exception 'hourly test fallback metadata is incorrect: %', hourly;
+  end if;
+
+  foreach role_name in array array['anon', 'authenticated']
+  loop
+    if not pg_catalog.has_function_privilege(
+      role_name,
+      'public.get_public_daily_usage(date,date,text,integer,integer)',
+      'execute'
+    ) or not pg_catalog.has_function_privilege(
+      role_name,
+      'public.get_public_hourly_usage(date,text)',
+      'execute'
+    ) then
+      raise exception '% lost a public usage RPC grant', role_name;
+    end if;
+
+    foreach table_name in array array['log_upload_batches', 'log_upload_usage']
+    loop
+      if pg_catalog.has_table_privilege(
+        role_name,
+        'public.' || table_name,
+        'select'
+      ) then
+        raise exception '% unexpectedly reads public.% after fallback', role_name, table_name;
+      end if;
+    end loop;
+  end loop;
+
+  if pg_catalog.has_function_privilege(
+    'service_role',
+    'public.get_public_daily_usage(date,date,text,integer,integer)',
+    'execute'
+  ) or pg_catalog.has_function_privilege(
+    'service_role',
+    'public.get_public_hourly_usage(date,text)',
+    'execute'
+  ) then
+    raise exception 'service_role regained a public usage RPC grant';
+  end if;
+end;
+$assert_hourly_mode_metadata$;
 
 rollback;
