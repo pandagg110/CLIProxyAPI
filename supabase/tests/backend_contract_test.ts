@@ -85,6 +85,64 @@ Deno.test("incremental migration adds history precision and defensive name const
   );
 });
 
+Deno.test("forward migration hides unnamed public usage before search and pagination", async () => {
+  const previousSql = compact(
+    await read(
+      "migrations/20260809000000_harden_ingest_and_history_precision.sql",
+    ),
+  );
+  let migrationSource = "";
+  try {
+    migrationSource = await read(
+      "migrations/20260810000000_hide_unnamed_key_usage.sql",
+    );
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+  const sql = compact(migrationSource);
+  const signature = "create or replace function public.get_public_daily_usage(";
+  const filters = [
+    "and u.key_name <> 'unauthenticated'",
+    "and u.key_name !~* '^key-[0-9a-f]{12}$'",
+    "and pg_catalog.btrim(u.key_name) <> ''",
+  ];
+
+  assert.match(
+    sql,
+    /create or replace function public\.get_public_daily_usage\(\s*p_from date, p_to date, p_search text, p_page integer, p_page_size integer\s*\)/,
+    "missing forward public daily RPC migration",
+  );
+
+  const nameTotalsIndex = sql.indexOf("name_totals as (");
+  const searchIndex = sql.indexOf("_search = ''", nameTotalsIndex);
+  const groupByIndex = sql.indexOf("group by u.key_name", nameTotalsIndex);
+  const pagedNamesIndex = sql.indexOf("paged_names as (", groupByIndex);
+  assert.ok(nameTotalsIndex >= 0, "missing name_totals CTE");
+  assert.ok(searchIndex > nameTotalsIndex, "search must be in name_totals");
+  assert.ok(groupByIndex > searchIndex, "grouping must follow search");
+  assert.ok(pagedNamesIndex > groupByIndex, "pagination must follow grouping");
+
+  let unfilteredSql = sql;
+  for (const filter of filters) {
+    const filterIndex = sql.indexOf(filter, nameTotalsIndex);
+    assert.ok(
+      filterIndex > nameTotalsIndex && filterIndex < searchIndex,
+      `public-name filter must precede search and grouping: ${filter}`,
+    );
+    unfilteredSql = unfilteredSql.replace(filter, "");
+  }
+
+  const previousDefinitionIndex = previousSql.indexOf(signature);
+  assert.ok(previousDefinitionIndex >= 0, "missing prior public daily RPC");
+  assert.equal(
+    compact(unfilteredSql).trim(),
+    previousSql.slice(previousDefinitionIndex).trim(),
+    "forward migration must preserve the complete RPC definition and ACL",
+  );
+});
+
 Deno.test("migration enables RLS, revokes direct reads, and grants only intended RPC roles", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
@@ -165,7 +223,7 @@ Deno.test("ingest migration source declares strict validation and bigint ranges"
 Deno.test("public daily migration source declares live filtering and the cell contract", async () => {
   const sql = compact(
     await read(
-      "migrations/20260809000000_harden_ingest_and_history_precision.sql",
+      "migrations/20260810000000_hide_unnamed_key_usage.sql",
     ),
   );
 
@@ -330,4 +388,18 @@ Deno.test("SQL assertion source declares behavior and privilege coverage", async
   assert.match(assertions, /2147483647/);
   assert.match(assertions, /9007199254740993/);
   assert.match(assertions, /literal search failed/);
+  for (
+    const marker of [
+      "private fallback rows were modified",
+      "hidden-only public query leaked fallback names",
+      "fallback names changed public aggregate",
+      "fallback names changed public pagination",
+      "fallback search leaked hidden names",
+    ]
+  ) {
+    assert.ok(
+      assertions.includes(marker),
+      `missing fallback filter marker: ${marker}`,
+    );
+  }
 });

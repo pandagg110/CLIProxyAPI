@@ -171,6 +171,136 @@ begin
 end;
 $assert_seed$;
 
+do $assert_public_name_filter$
+declare
+  hidden_only jsonb;
+  daily jsonb;
+  page_daily jsonb;
+  search_daily jsonb;
+  before_batch_count bigint;
+  before_usage_count bigint;
+  after_batch_count bigint;
+  after_usage_count bigint;
+  expected_name text;
+  page_number integer;
+begin
+  perform public.ingest_log_usage_v1(
+    pg_catalog.jsonb_build_object(
+      'schema_version', 1,
+      'event_id', 'sql-assert-hidden-only',
+      'target_id', 'assertions',
+      'object_key', 'assertions/hidden-only.jsonl.zst',
+      'archive_sha256', pg_catalog.repeat('a', 64),
+      'manifest_sha256', pg_catalog.repeat('b', 64),
+      'hour_start', '2026-01-06T00:00:00Z',
+      'timezone', 'UTC',
+      'usage_date', '2026-01-06',
+      'source_count', 3,
+      'source_bytes', 2400,
+      'jsonl_bytes', 2400,
+      'compressed_bytes', 1000,
+      'test_mode', true,
+      'usage', pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object('key_name', 'unauthenticated', 'provider', 'codex', 'source_count', 1, 'source_bytes', 1000, 'jsonl_bytes', 1000),
+        pg_catalog.jsonb_build_object('key_name', 'key-0123456789ab', 'provider', 'codex', 'source_count', 1, 'source_bytes', 800, 'jsonl_bytes', 800),
+        pg_catalog.jsonb_build_object('key_name', 'KEY-ABCDEF012345', 'provider', 'codex', 'source_count', 1, 'source_bytes', 600, 'jsonl_bytes', 600)
+      )
+    ),
+    pg_catalog.repeat('c', 64)
+  );
+  perform public.ingest_log_usage_v1(
+    pg_catalog.jsonb_build_object(
+      'schema_version', 1,
+      'event_id', 'sql-assert-hidden-visible',
+      'target_id', 'assertions',
+      'object_key', 'assertions/hidden-visible.jsonl.zst',
+      'archive_sha256', pg_catalog.repeat('d', 64),
+      'manifest_sha256', pg_catalog.repeat('e', 64),
+      'hour_start', '2026-01-07T00:00:00Z',
+      'timezone', 'UTC',
+      'usage_date', '2026-01-07',
+      'source_count', 3,
+      'source_bytes', 60,
+      'jsonl_bytes', 60,
+      'compressed_bytes', 30,
+      'test_mode', true,
+      'usage', pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object('key_name', 'key-operations', 'provider', 'codex', 'source_count', 1, 'source_bytes', 30, 'jsonl_bytes', 30),
+        pg_catalog.jsonb_build_object('key_name', 'key-123', 'provider', 'codex', 'source_count', 1, 'source_bytes', 20, 'jsonl_bytes', 20),
+        pg_catalog.jsonb_build_object('key_name', 'Unauthenticated Team', 'provider', 'codex', 'source_count', 1, 'source_bytes', 10, 'jsonl_bytes', 10)
+      )
+    ),
+    pg_catalog.repeat('f', 64)
+  );
+
+  select pg_catalog.count(*) into before_batch_count
+  from public.log_upload_batches
+  where event_id like 'sql-assert-hidden-%';
+  select pg_catalog.count(*) into before_usage_count
+  from public.log_upload_usage
+  where event_id like 'sql-assert-hidden-%';
+  if before_batch_count <> 2 or before_usage_count <> 6 then
+    raise exception 'private fallback rows were modified';
+  end if;
+
+  hidden_only := public.get_public_daily_usage(date '2026-01-06', date '2026-01-06', '', 1, 20);
+  if hidden_only #>> '{pagination,total}' is distinct from '0'
+    or hidden_only -> 'names' is distinct from '[]'::jsonb
+    or hidden_only -> 'cells' is distinct from '[]'::jsonb then
+    raise exception 'hidden-only public query leaked fallback names';
+  end if;
+
+  daily := public.get_public_daily_usage(date '2026-01-06', date '2026-01-07', '', 1, 20);
+  if daily #>> '{pagination,total}' is distinct from '3'
+    or daily -> 'names' is distinct from '["key-operations", "key-123", "Unauthenticated Team"]'::jsonb
+    or pg_catalog.jsonb_array_length(daily -> 'cells') <> 3
+    or exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(daily -> 'cells') as cells(value)
+      where cells.value ->> 'key_name' not in ('key-operations', 'key-123', 'Unauthenticated Team')
+    ) then
+    raise exception 'fallback names changed public aggregate';
+  end if;
+
+  for page_number in 1..4 loop
+    page_daily := public.get_public_daily_usage(date '2026-01-06', date '2026-01-07', '', page_number, 1);
+    expected_name := case page_number
+      when 1 then 'key-operations'
+      when 2 then 'key-123'
+      when 3 then 'Unauthenticated Team'
+      else null
+    end;
+    if page_daily #>> '{pagination,total}' is distinct from '3'
+      or (expected_name is not null and (page_daily -> 'names' is distinct from pg_catalog.jsonb_build_array(expected_name) or pg_catalog.jsonb_array_length(page_daily -> 'cells') <> 1))
+      or (expected_name is null and (page_daily -> 'names' is distinct from '[]'::jsonb or page_daily -> 'cells' is distinct from '[]'::jsonb)) then
+      raise exception 'fallback names changed public pagination';
+    end if;
+  end loop;
+
+  search_daily := public.get_public_daily_usage(date '2026-01-06', date '2026-01-07', 'key-', 1, 20);
+  if search_daily #>> '{pagination,total}' is distinct from '2'
+    or search_daily -> 'names' is distinct from '["key-operations", "key-123"]'::jsonb then
+    raise exception 'fallback search leaked hidden names';
+  end if;
+  search_daily := public.get_public_daily_usage(date '2026-01-06', date '2026-01-07', 'unauthenticated', 1, 20);
+  if search_daily #>> '{pagination,total}' is distinct from '1'
+    or search_daily -> 'names' is distinct from '["Unauthenticated Team"]'::jsonb then
+    raise exception 'fallback search leaked hidden names';
+  end if;
+
+  select pg_catalog.count(*) into after_batch_count
+  from public.log_upload_batches
+  where event_id like 'sql-assert-hidden-%';
+  select pg_catalog.count(*) into after_usage_count
+  from public.log_upload_usage
+  where event_id like 'sql-assert-hidden-%';
+  if after_batch_count <> before_batch_count or after_usage_count <> before_usage_count
+    or after_batch_count <> 2 or after_usage_count <> 6 then
+    raise exception 'private fallback rows were modified';
+  end if;
+end;
+$assert_public_name_filter$;
+
 do $assert_behavior$
 declare
   test_payload jsonb;
