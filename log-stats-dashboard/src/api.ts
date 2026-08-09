@@ -45,13 +45,28 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
+function isDecimalString(value: unknown): value is string {
+  return typeof value === "string" && DECIMAL.test(value);
+}
+
 function isCell(value: unknown): value is DailyUsageCell {
   if (!isRecord(value)) return false;
-  return isDateString(value.date) &&
-    typeof value.key_name === "string" && value.key_name.length > 0 &&
-    ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"].every(
-      (field) => typeof value[field] === "string" && DECIMAL.test(value[field]),
-    ) && isInteger(value.batch_count);
+  if (!isDateString(value.date)) return false;
+  if (typeof value.key_name !== "string" || value.key_name.length === 0) return false;
+  if (!["source_bytes", "gpt_source_bytes", "claude_source_bytes", "grok_source_bytes"].every(
+    (field) => isDecimalString(value[field]),
+  ) || !isInteger(value.batch_count)) return false;
+  if (value.usage_precision === "exact") {
+    return ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"].every(
+      (field) => isDecimalString(value[field]),
+    );
+  }
+  if (value.usage_precision === "batch_only") {
+    return ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"].every(
+      (field) => value[field] === null,
+    );
+  }
+  return false;
 }
 
 function expectedDays(from: string, to: string): string[] {
@@ -63,7 +78,7 @@ function expectedDays(from: string, to: string): string[] {
 }
 
 export function validateDailyResponse(value: unknown, query: DashboardQuery): DailyUsageResponse | null {
-  if (!isRecord(value) || !isTimezone(value.timezone) ||
+  if (!isRecord(value) || value.metric_basis !== "source_bytes" || !isTimezone(value.timezone) ||
     !isDateString(value.from) || !isDateString(value.to) ||
     typeof value.using_test_data !== "boolean" ||
     !isStringArray(value.names) || !isStringArray(value.days) ||
@@ -97,9 +112,11 @@ export function validateDailyResponse(value: unknown, query: DashboardQuery): Da
     const pair = JSON.stringify([cell.date, cell.key_name]);
     if (cellPairs.has(pair)) return null;
     cellPairs.add(pair);
-    if (BigInt(cell.gpt_bytes) + BigInt(cell.claude_bytes) + BigInt(cell.grok_bytes) !== BigInt(cell.jsonl_bytes)) {
+    if (BigInt(cell.gpt_source_bytes) + BigInt(cell.claude_source_bytes) + BigInt(cell.grok_source_bytes) !== BigInt(cell.source_bytes)) {
       return null;
     }
+    if (cell.usage_precision === "exact" &&
+      BigInt(cell.gpt_bytes!) + BigInt(cell.claude_bytes!) + BigInt(cell.grok_bytes!) !== BigInt(cell.jsonl_bytes!)) return null;
   }
   return value as unknown as DailyUsageResponse;
 }

@@ -26,9 +26,9 @@ export function buildMatrix(cells: DailyUsageCell[]) {
 
 export function providerBreakdown(cell: DailyUsageCell) {
   return [
-    { label: "GPT", bytes: cell.gpt_bytes },
-    { label: "Claude", bytes: cell.claude_bytes },
-    { label: "Grok", bytes: cell.grok_bytes },
+    { label: "GPT", bytes: cell.gpt_source_bytes },
+    { label: "Claude", bytes: cell.claude_source_bytes },
+    { label: "Grok", bytes: cell.grok_source_bytes },
   ];
 }
 

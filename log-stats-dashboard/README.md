@@ -58,6 +58,7 @@ The public response is:
 
 ```ts
 interface PublicDailyUsageResponse {
+  metric_basis: "source_bytes";
   timezone: string;
   from: string;
   to: string;
@@ -68,17 +69,30 @@ interface PublicDailyUsageResponse {
   cells: Array<{
     date: string;
     key_name: string;
-    jsonl_bytes: string;
-    gpt_bytes: string;
-    claude_bytes: string;
-    grok_bytes: string;
+    source_bytes: string;
+    gpt_source_bytes: string;
+    claude_source_bytes: string;
+    grok_source_bytes: string;
+    usage_precision: "exact" | "batch_only";
+    jsonl_bytes: string | null;
+    gpt_bytes: string | null;
+    claude_bytes: string | null;
+    grok_bytes: string | null;
     batch_count: number;
   }>;
   latest_sync_at: string | null;
 }
 ```
 
-All four byte fields are nonnegative base-10 strings. The frontend validates them at runtime and formats them as strings or `BigInt`; it never converts byte values to `Number`, so values above `2^53` stay exact.
+The dashboard matrix, intensity, and provider breakdown use the four exact
+source-byte fields. Available byte values are nonnegative base-10 strings. The
+frontend validates them at runtime and formats them as strings or `BigInt`; it
+never converts byte values to `Number`, so values above `2^53` stay exact.
+
+`batch_only` marks locally reconstructed history where exact per-name JSONL was
+never recorded. Those JSONL fields must be `null`, and the details dialog says
+“历史无逐人精确 JSONL” instead of presenting an estimate. Exact live cells may
+show the additional normalized JSONL total.
 
 ## Deployment order
 

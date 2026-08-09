@@ -87,14 +87,22 @@ Deno.test("ingest handler rejects missing and wrong tokens without invoking RPC"
   });
   const body = JSON.stringify(validEvent());
   const missing = new Request("https://edge.test/", { method: "POST", body });
+  const apikeyOnly = new Request("https://edge.test/", {
+    method: "POST",
+    headers: { apikey: "expected-token", "content-type": "application/json" },
+    body,
+  });
 
   const missingResponse = await handler(missing);
   const wrongResponse = await handler(request(body, "wrong-token"));
+  const apikeyOnlyResponse = await handler(apikeyOnly);
 
   assert.equal(missingResponse.status, 401);
   assert.deepEqual(await missingResponse.json(), { error: "unauthorized" });
   assert.equal(wrongResponse.status, 401);
   assert.deepEqual(await wrongResponse.json(), { error: "unauthorized" });
+  assert.equal(apikeyOnlyResponse.status, 401);
+  assert.deepEqual(await apikeyOnlyResponse.json(), { error: "unauthorized" });
   assert.equal(calls, 0);
 });
 
@@ -162,6 +170,13 @@ Deno.test("ingest handler rejects unsupported and sensitive fields before RPC", 
       ...validEvent(),
       usage: [{ ...validEvent().usage[0], key_name: rejectedValue }],
     },
+    {
+      ...validEvent(),
+      usage: [{
+        ...validEvent().usage[0],
+        key_name: `  CpA_${rejectedValue}  `,
+      }],
+    },
     { ...validEvent(), event_id: rejectedValue },
     {
       ...validEvent(),
@@ -207,10 +222,52 @@ Deno.test("ingest handler hashes the exact body and calls the service-role RPC",
     key: "service-role-key",
     functionName: "ingest_log_usage_v1",
     args: {
-      payload: { ...validEvent(), test_mode: false },
+      payload: {
+        ...validEvent(),
+        usage_precision: "exact",
+        test_mode: false,
+      },
       payload_sha256: await sha256HexForBytes(bodyBytes),
     },
   });
+});
+
+Deno.test("ingest handler normalizes batch-only history before calling RPC", async () => {
+  const event = validEvent();
+  const historyEvent = {
+    ...event,
+    usage_precision: "batch_only",
+    usage: event.usage.map(({ jsonl_bytes: _jsonlBytes, ...entry }) => entry),
+  };
+  let captured: unknown;
+  const handler = createIngestHandler({
+    env,
+    rpc: (call) => {
+      captured = call;
+      return Promise.resolve({
+        data: { status: "inserted", event_id: "edge-test-event" },
+        error: null,
+      });
+    },
+  });
+  const body = JSON.stringify(historyEvent);
+
+  const response = await handler(request(body));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    (captured as {
+      args: { payload: { usage: Array<{ jsonl_bytes: unknown }> } };
+    })
+      .args.payload.usage,
+    [{
+      key_name: "张三",
+      provider: "codex",
+      source_count: 1,
+      source_bytes: 100,
+      jsonl_bytes: null,
+    }],
+  );
 });
 
 Deno.test("ingest handler hashes UTF-8 BOM bytes instead of decoded text", async () => {
@@ -244,7 +301,11 @@ Deno.test("ingest handler hashes UTF-8 BOM bytes instead of decoded text", async
     key: "service-role-key",
     functionName: "ingest_log_usage_v1",
     args: {
-      payload: { ...validEvent(), test_mode: false },
+      payload: {
+        ...validEvent(),
+        usage_precision: "exact",
+        test_mode: false,
+      },
       payload_sha256: rawDigest,
     },
   });

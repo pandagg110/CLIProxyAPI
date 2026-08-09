@@ -144,7 +144,7 @@ export class DashboardApp {
         <header class="page-header">
           <p class="eyebrow">运营统计</p>
           <h1>日志用量统计</h1>
-          <p class="intro">按日期和 API Key Name 查看 JSONL 精确字节，并下钻到各模型供应商。</p>
+          <p class="intro">按日期和 API Key Name 查看服务器记录的完整原始日志字节，并下钻到各模型供应商。</p>
         </header>
 
         <section class="filters" aria-label="筛选条件">
@@ -215,7 +215,7 @@ export class DashboardApp {
     const data = this.data!;
     const matrix = buildMatrix(data.cells);
     const maximum = data.cells.reduce((current, entry) => {
-      const value = BigInt(entry.jsonl_bytes);
+      const value = BigInt(entry.source_bytes);
       return value > current ? value : current;
     }, 0n);
     const headers = data.names.map((name) => `<th scope="col">${escapeHtml(name)}</th>`).join("");
@@ -225,13 +225,14 @@ export class DashboardApp {
         if (entry === undefined) {
           return `<td class="missing"><span aria-label="${escapeHtml(name)}，${escapeHtml(day)}，无记录">—<small>无记录</small></span></td>`;
         }
-        const formatted = formatDecimalBytes(entry.jsonl_bytes);
+        const formatted = formatDecimalBytes(entry.source_bytes);
         const encoded = encodeURIComponent(JSON.stringify([entry.date, entry.key_name]));
-        return `<td class="intensity-${intensityLevel(entry.jsonl_bytes, maximum)}"><button type="button" class="cell-button" data-cell="${encoded}" data-focus-key="cell-${encoded}" aria-label="${escapeHtml(name)}，${escapeHtml(day)}，${escapeHtml(formatted)}"><strong>${escapeHtml(formatted)}</strong><small>${entry.batch_count} 批</small></button></td>`;
+        const precision = entry.usage_precision === "batch_only" ? " · 历史口径" : "";
+        return `<td class="intensity-${intensityLevel(entry.source_bytes, maximum)}"><button type="button" class="cell-button" data-cell="${encoded}" data-focus-key="cell-${encoded}" aria-label="${escapeHtml(name)}，${escapeHtml(day)}，${escapeHtml(formatted)}"><strong>${escapeHtml(formatted)}</strong><small>${entry.batch_count} 批${precision}</small></button></td>`;
       }).join("");
       return `<tr><th scope="row">${escapeHtml(day)}</th>${cells}</tr>`;
     }).join("");
-    return `<section class="matrix-section" aria-labelledby="matrix-heading"><div class="section-heading"><div><h2 id="matrix-heading">每日 JSONL 字节</h2><p>数值为精确字节；“无记录”与 0 B 分开显示。</p></div><p class="legend" aria-label="蓝色深浅仅辅助表示相对用量">浅色 → 深色：相对用量</p></div><div class="table-scroll" data-testid="matrix-scroll" data-focus-key="matrix-scroll" tabindex="0"><table aria-label="每日 API Key 日志字节矩阵"><caption class="sr-only">日期为行，API Key Name 为列的 JSONL 字节矩阵</caption><thead><tr><th scope="col">日期</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    return `<section class="matrix-section" aria-labelledby="matrix-heading"><div class="section-heading"><div><h2 id="matrix-heading">每日原始日志字节</h2><p>数值为服务器上传器记录的完整原始日志字节；“无记录”与 0 B 分开显示。</p></div><p class="legend" aria-label="蓝色深浅仅辅助表示相对用量">浅色 → 深色：相对用量</p></div><div class="table-scroll" data-testid="matrix-scroll" data-focus-key="matrix-scroll" tabindex="0"><table aria-label="每日 API Key 原始日志字节矩阵"><caption class="sr-only">日期为行，API Key Name 为列的原始日志字节矩阵</caption><thead><tr><th scope="col">日期</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
   }
 
   private renderPagination(): string {
@@ -348,7 +349,10 @@ export class DashboardApp {
     const dialog = this.root.querySelector<HTMLDialogElement>("#details-dialog");
     const content = dialog?.querySelector<HTMLElement>("#details-content") ?? null;
     if (dialog === null || content === null) return;
-    content.innerHTML = `<dl class="details"><div><dt>日期</dt><dd>${escapeHtml(cell.date)}</dd></div><div><dt>API Key Name</dt><dd>${escapeHtml(cell.key_name)}</dd></div><div><dt>JSONL 总字节</dt><dd>${escapeHtml(formatDecimalBytes(cell.jsonl_bytes))}</dd></div>${providerBreakdown(cell).map((provider) => `<div><dt>${provider.label}</dt><dd>${escapeHtml(formatDecimalBytes(provider.bytes))}</dd></div>`).join("")}<div><dt>批次</dt><dd>批次数：${cell.batch_count}</dd></div></dl>`;
+    const jsonlDetail = cell.usage_precision === "exact" && cell.jsonl_bytes !== null
+      ? `<div><dt>归一化 JSONL 总字节</dt><dd>${escapeHtml(formatDecimalBytes(cell.jsonl_bytes))}</dd></div>`
+      : "<div><dt>JSONL 精度</dt><dd>历史无逐人精确 JSONL</dd></div>";
+    content.innerHTML = `<dl class="details"><div><dt>日期</dt><dd>${escapeHtml(cell.date)}</dd></div><div><dt>API Key Name</dt><dd>${escapeHtml(cell.key_name)}</dd></div><div><dt>原始日志总字节</dt><dd>${escapeHtml(formatDecimalBytes(cell.source_bytes))}</dd></div>${providerBreakdown(cell).map((provider) => `<div><dt>${provider.label} 原始日志字节</dt><dd>${escapeHtml(formatDecimalBytes(provider.bytes))}</dd></div>`).join("")}${jsonlDetail}<div><dt>批次</dt><dd>批次数：${cell.batch_count}</dd></div></dl>`;
     if (!dialog.open) dialog.showModal();
     if (focusClose) dialog.querySelector<HTMLButtonElement>("[data-close]")?.focus();
   }

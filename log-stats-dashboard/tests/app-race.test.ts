@@ -18,6 +18,7 @@ function responseFor(query: DashboardQuery, name: string): DailyUsageResponse {
     days.push(new Date(cursor).toISOString().slice(0, 10));
   }
   return {
+    metric_basis: "source_bytes",
     timezone: "Asia/Hong_Kong",
     from: query.from,
     to: query.to,
@@ -28,6 +29,11 @@ function responseFor(query: DashboardQuery, name: string): DailyUsageResponse {
     cells: [{
       date: query.to,
       key_name: name,
+      source_bytes: "1",
+      gpt_source_bytes: "1",
+      claude_source_bytes: "0",
+      grok_source_bytes: "0",
+      usage_precision: "exact",
       jsonl_bytes: "1",
       gpt_bytes: "1",
       claude_bytes: "0",

@@ -1,4 +1,5 @@
 {
+  "metric_basis": "source_bytes",
   "timezone": "Asia/Shanghai",
   "from": "2026-08-08",
   "to": "2026-08-08",
@@ -18,10 +19,15 @@
     {
       "date": "2026-08-08",
       "key_name": "张三",
-      "jsonl_bytes": "9007199254740993",
-      "gpt_bytes": "9007199254740993",
-      "claude_bytes": "0",
-      "grok_bytes": "0",
+      "source_bytes": "7007199254740993",
+      "gpt_source_bytes": "7007199254740993",
+      "claude_source_bytes": "0",
+      "grok_source_bytes": "0",
+      "usage_precision": "batch_only",
+      "jsonl_bytes": null,
+      "gpt_bytes": null,
+      "claude_bytes": null,
+      "grok_bytes": null,
       "batch_count": 2
     }
   ],

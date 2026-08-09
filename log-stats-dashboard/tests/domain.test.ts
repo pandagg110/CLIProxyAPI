@@ -22,6 +22,11 @@ describe("matrix", () => {
     const zeroCell = {
       date: "2026-08-08",
       key_name: "运营一组",
+      source_bytes: "0",
+      gpt_source_bytes: "0",
+      claude_source_bytes: "0",
+      grok_source_bytes: "0",
+      usage_precision: "exact" as const,
       jsonl_bytes: "0",
       gpt_bytes: "0",
       claude_bytes: "0",
@@ -39,10 +44,15 @@ test("maps provider byte fields to user-facing provider labels", () => {
   const result = providerBreakdown({
     date: "2026-08-08",
     key_name: "运营一组",
-    jsonl_bytes: "12",
-    gpt_bytes: "3",
-    claude_bytes: "4",
-    grok_bytes: "5",
+    source_bytes: "12",
+    gpt_source_bytes: "3",
+    claude_source_bytes: "4",
+    grok_source_bytes: "5",
+    usage_precision: "batch_only",
+    jsonl_bytes: null,
+    gpt_bytes: null,
+    claude_bytes: null,
+    grok_bytes: null,
     batch_count: 2,
   });
 

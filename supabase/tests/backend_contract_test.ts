@@ -61,6 +61,30 @@ Deno.test("migration defines private batch and name-provider usage tables", asyn
   }
 });
 
+Deno.test("incremental migration adds history precision and defensive name constraints", async () => {
+  const sql = compact(
+    await read(
+      "migrations/20260809000000_harden_ingest_and_history_precision.sql",
+    ),
+  );
+
+  assert.match(
+    sql,
+    /add column usage_precision text not null default 'exact'/,
+  );
+  assert.match(sql, /usage_precision in \('exact', 'batch_only'\)/);
+  assert.match(sql, /alter column jsonl_bytes drop not null/);
+  assert.match(sql, /jsonl_bytes is null or jsonl_bytes >= 0/);
+  assert.match(
+    sql,
+    /(?:pg_catalog\.)?char_length\((?:pg_catalog\.)?btrim\(key_name\)\) <= 48/,
+  );
+  assert.match(
+    sql,
+    /(?:pg_catalog\.)?lower\(\s*(?:pg_catalog\.)?left\((?:pg_catalog\.)?btrim\(key_name\), 4\)\s*\) <> 'cpa_'/,
+  );
+});
+
 Deno.test("migration enables RLS, revokes direct reads, and grants only intended RPC roles", async () => {
   const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
 
@@ -94,7 +118,11 @@ Deno.test("migration enables RLS, revokes direct reads, and grants only intended
 });
 
 Deno.test("ingest migration source declares strict validation and bigint ranges", async () => {
-  const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
+  const sql = compact(
+    await read(
+      "migrations/20260809000000_harden_ingest_and_history_precision.sql",
+    ),
+  );
 
   assert.match(
     sql,
@@ -110,6 +138,13 @@ Deno.test("ingest migration source declares strict validation and bigint ranges"
   assert.match(sql, /object_key must be a safe relative object key/);
   assert.match(sql, /key_name must be a display label, not a secret/);
   assert.match(sql, /test_mode/);
+  assert.match(sql, /usage_precision/);
+  assert.match(sql, /batch_only/);
+  assert.match(sql, /(?:pg_catalog\.)?char_length\(_trimmed_key_name\) > 48/);
+  assert.match(
+    sql,
+    /_trimmed_key_name ~\* '\^cpa_'/,
+  );
   assert.doesNotMatch(sql, /payload -> 'is_test'/);
   assert.match(sql, /pg_catalog\.pg_timezone_names/);
   assert.match(sql, /usage_date must match hour_start in timezone/);
@@ -128,7 +163,11 @@ Deno.test("ingest migration source declares strict validation and bigint ranges"
 });
 
 Deno.test("public daily migration source declares live filtering and the cell contract", async () => {
-  const sql = compact(await read("migrations/20260808000000_log_usage.sql"));
+  const sql = compact(
+    await read(
+      "migrations/20260809000000_harden_ingest_and_history_precision.sql",
+    ),
+  );
 
   assert.match(
     sql,
@@ -147,6 +186,7 @@ Deno.test("public daily migration source declares live filtering and the cell co
   for (
     const key of [
       "timezone",
+      "metric_basis",
       "from",
       "to",
       "using_test_data",
@@ -159,6 +199,11 @@ Deno.test("public daily migration source declares live filtering and the cell co
       "cells",
       "latest_sync_at",
       "key_name",
+      "source_bytes",
+      "gpt_source_bytes",
+      "claude_source_bytes",
+      "grok_source_bytes",
+      "usage_precision",
       "jsonl_bytes",
       "gpt_bytes",
       "claude_bytes",
@@ -169,7 +214,12 @@ Deno.test("public daily migration source declares live filtering and the cell co
     assert.ok(sql.includes(`'${key}'`), `missing response key: ${key}`);
   }
   for (
-    const field of ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"]
+    const field of [
+      "source_bytes",
+      "gpt_source_bytes",
+      "claude_source_bytes",
+      "grok_source_bytes",
+    ]
   ) {
     assert.match(
       sql,
@@ -177,22 +227,36 @@ Deno.test("public daily migration source declares live filtering and the cell co
       `${field} must be serialized as exact decimal text`,
     );
   }
+  assert.match(sql, /'metric_basis', 'source_bytes'/);
+  assert.match(
+    sql,
+    /when cells\.all_exact then cells\.jsonl_bytes::text else null end/,
+  );
+  assert.match(sql, /order by names\.total_source_bytes desc, names\.key_name/);
   assert.match(
     sql,
     /offset \(\(p_page::bigint - 1::bigint\) \* p_page_size::bigint\)/,
   );
 });
 
-Deno.test("public daily response example preserves exact byte strings", async () => {
+Deno.test("public daily response example distinguishes source bytes from optional JSONL", async () => {
   const example = JSON.parse(await read("examples/daily-response.json"));
   const cell = example.cells[0];
 
-  assert.equal(cell.jsonl_bytes, "9007199254740993");
+  assert.equal(example.metric_basis, "source_bytes");
+  assert.equal(cell.source_bytes, "7007199254740993");
+  assert.equal(cell.jsonl_bytes, null);
   for (
-    const field of ["jsonl_bytes", "gpt_bytes", "claude_bytes", "grok_bytes"]
+    const field of [
+      "source_bytes",
+      "gpt_source_bytes",
+      "claude_source_bytes",
+      "grok_source_bytes",
+    ]
   ) {
     assert.equal(typeof cell[field], "string");
   }
+  assert.equal(cell.usage_precision, "batch_only");
   assert.equal(typeof cell.batch_count, "number");
   assert.equal(typeof example.pagination.page, "number");
   assert.equal(typeof example.pagination.page_size, "number");
@@ -252,6 +316,12 @@ Deno.test("SQL assertion source declares behavior and privilege coverage", async
   assert.match(assertions, /2026-01-02/);
   assert.match(assertions, /2026-01-01/);
   assert.match(assertions, /using_test_data/);
+  assert.match(assertions, /usage_precision/);
+  assert.match(assertions, /batch_only/);
+  assert.match(assertions, /source_bytes/);
+  assert.match(assertions, /gpt_source_bytes/);
+  assert.match(assertions, /claude_source_bytes/);
+  assert.match(assertions, /grok_source_bytes/);
   assert.match(assertions, /jsonl_bytes/);
   assert.match(assertions, /batch_count/);
   assert.match(assertions, /gpt_bytes/);

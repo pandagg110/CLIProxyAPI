@@ -10,7 +10,7 @@ function env(name: string): string | undefined {
   }[name];
 }
 
-Deno.test("dashboard handler serves the safe placeholder HTML for a normal GET", async () => {
+Deno.test("dashboard handler serves the built source-byte dashboard for a normal GET", async () => {
   const handler = createDashboardHandler({
     env,
     rpc: () => Promise.resolve({ data: null, error: null }),
@@ -23,7 +23,9 @@ Deno.test("dashboard handler serves the safe placeholder HTML for a normal GET",
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html/);
-  assert.match(html, /dashboard frontend has not been built/i);
+  assert.match(html, /日志用量统计/);
+  assert.match(html, /每日原始日志字节/);
+  assert.doesNotMatch(html, /dashboard frontend has not been built/i);
 });
 
 Deno.test("dashboard handler rejects invalid daily range and pagination before RPC", async () => {
@@ -52,6 +54,7 @@ Deno.test("dashboard handler rejects invalid daily range and pagination before R
 
 Deno.test("dashboard handler calls the anon RPC and returns the compact daily shape", async () => {
   const payload: PublicDailyUsageResponse = {
+    metric_basis: "source_bytes",
     timezone: "Asia/Shanghai",
     from: "2026-08-01",
     to: "2026-08-02",
@@ -66,6 +69,11 @@ Deno.test("dashboard handler calls the anon RPC and returns the compact daily sh
     cells: [{
       date: "2026-08-01",
       key_name: "张三",
+      source_bytes: "7007199254740993",
+      gpt_source_bytes: "7007199254740993",
+      claude_source_bytes: "0",
+      grok_source_bytes: "0",
+      usage_precision: "exact",
       jsonl_bytes: "9007199254740993",
       gpt_bytes: "9007199254740993",
       claude_bytes: "0",

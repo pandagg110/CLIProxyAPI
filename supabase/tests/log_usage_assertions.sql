@@ -136,6 +136,7 @@ begin
     20
   );
   if (seed_daily ->> 'using_test_data')::boolean is distinct from true
+    or seed_daily ->> 'metric_basis' <> 'source_bytes'
     or seed_daily #>> '{pagination,total}' <> '3' then
     raise exception 'seed dashboard metadata is incorrect: %', seed_daily;
   end if;
@@ -155,6 +156,11 @@ begin
   where values.value ->> 'date' = '2026-08-01'
     and values.value ->> 'key_name' = '王五';
   if zero_cell is null
+    or zero_cell ->> 'source_bytes' <> '0'
+    or zero_cell ->> 'gpt_source_bytes' <> '0'
+    or zero_cell ->> 'claude_source_bytes' <> '0'
+    or zero_cell ->> 'grok_source_bytes' <> '0'
+    or zero_cell ->> 'usage_precision' <> 'exact'
     or zero_cell ->> 'jsonl_bytes' <> '0'
     or zero_cell ->> 'gpt_bytes' <> '0'
     or zero_cell ->> 'claude_bytes' <> '0'
@@ -168,6 +174,7 @@ $assert_seed$;
 do $assert_behavior$
 declare
   test_payload jsonb;
+  history_payload jsonb;
   second_payload jsonb;
   boundary_payload jsonb;
   large_payload jsonb;
@@ -220,6 +227,86 @@ begin
   result := public.ingest_log_usage_v1(test_payload, pg_catalog.repeat('c', 64));
   if result ->> 'status' <> 'duplicate' then
     raise exception 'expected duplicate result, got %', result;
+  end if;
+  if not exists (
+    select 1
+    from public.log_upload_batches
+    where event_id = 'sql-assert-test'
+      and usage_precision = 'exact'
+  ) then
+    raise exception 'missing usage_precision did not default to exact';
+  end if;
+
+  history_payload := test_payload || pg_catalog.jsonb_build_object(
+    'event_id', 'sql-assert-history',
+    'object_key', 'assertions/history.jsonl.zst',
+    'hour_start', '2026-01-05T00:00:00Z',
+    'timezone', 'UTC',
+    'usage_date', '2026-01-05',
+    'source_count', 3,
+    'source_bytes', 60,
+    'jsonl_bytes', 750,
+    'compressed_bytes', 250,
+    'usage_precision', 'batch_only',
+    'usage', pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('key_name', 'sql-history', 'provider', 'codex', 'source_count', 1, 'source_bytes', 10, 'jsonl_bytes', null),
+      pg_catalog.jsonb_build_object('key_name', 'sql-history', 'provider', 'fable5', 'source_count', 2, 'source_bytes', 50)
+    )
+  );
+  result := public.ingest_log_usage_v1(history_payload, pg_catalog.repeat('b', 64));
+  if result ->> 'status' <> 'inserted'
+    or not exists (
+      select 1
+      from public.log_upload_batches
+      where event_id = 'sql-assert-history'
+        and usage_precision = 'batch_only'
+        and jsonl_bytes = 750
+    )
+    or exists (
+      select 1
+      from public.log_upload_usage
+      where event_id = 'sql-assert-history'
+        and jsonl_bytes is not null
+    ) then
+    raise exception 'batch_only history was not stored without per-name JSONL';
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.ingest_log_usage_v1(
+      history_payload || pg_catalog.jsonb_build_object(
+        'event_id', 'sql-assert-history-jsonl',
+        'usage', pg_catalog.jsonb_build_array(
+          pg_catalog.jsonb_build_object('key_name', 'sql-history', 'provider', 'codex', 'source_count', 3, 'source_bytes', 60, 'jsonl_bytes', 750)
+        )
+      ),
+      pg_catalog.repeat('d', 64)
+    );
+  exception
+    when sqlstate '22023' then
+      validation_seen := true;
+  end;
+  if not validation_seen then
+    raise exception 'batch_only usage accepted per-name JSONL';
+  end if;
+
+  validation_seen := false;
+  begin
+    perform public.ingest_log_usage_v1(
+      test_payload || pg_catalog.jsonb_build_object(
+        'event_id', 'sql-assert-exact-missing-jsonl',
+        'usage', pg_catalog.jsonb_build_array(
+          pg_catalog.jsonb_build_object('key_name', 'sql-exact', 'provider', 'codex', 'source_count', 3, 'source_bytes', 60)
+        )
+      ),
+      pg_catalog.repeat('d', 64)
+    );
+  exception
+    when sqlstate '22023' then
+      validation_seen := true;
+  end;
+  if not validation_seen then
+    raise exception 'exact usage accepted missing per-name JSONL';
   end if;
 
   begin
@@ -475,6 +562,55 @@ begin
     end if;
   end loop;
 
+  perform public.ingest_log_usage_v1(
+    test_payload || pg_catalog.jsonb_build_object(
+      'event_id', 'sql-assert-name-48',
+      'object_key', 'assertions/name-48.jsonl.zst',
+      'hour_start', '2026-01-06T00:00:00Z',
+      'timezone', 'UTC',
+      'usage_date', '2026-01-06',
+      'source_count', 1,
+      'source_bytes', 1,
+      'jsonl_bytes', 1,
+      'usage', pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object(
+          'key_name', pg_catalog.repeat('😀', 48),
+          'provider', 'codex',
+          'source_count', 1,
+          'source_bytes', 1,
+          'jsonl_bytes', 1
+        )
+      )
+    ),
+    pg_catalog.repeat('3', 64)
+  );
+
+  foreach secret_key_name in array array[
+    pg_catalog.repeat('😀', 49),
+    '  CpA_private-name  '
+  ]
+  loop
+    rejection_seen := false;
+    error_message := null;
+    begin
+      perform public.ingest_log_usage_v1(
+        pg_catalog.jsonb_set(
+          test_payload || pg_catalog.jsonb_build_object('event_id', 'sql-assert-rejected-name'),
+          '{usage,0,key_name}',
+          pg_catalog.to_jsonb(secret_key_name)
+        ),
+        pg_catalog.repeat('3', 64)
+      );
+    exception
+      when sqlstate '22023' then
+        rejection_seen := true;
+        error_message := sqlerrm;
+    end;
+    if not rejection_seen or pg_catalog.strpos(error_message, secret_key_name) > 0 then
+      raise exception 'restricted key name was not rejected safely';
+    end if;
+  end loop;
+
   validation_seen := false;
   begin
     perform public.ingest_log_usage_v1(
@@ -559,6 +695,7 @@ begin
     raise exception 'expected using_test_data before live rows: %', daily;
   end if;
   if not daily ?& array[
+    'metric_basis',
     'timezone',
     'from',
     'to',
@@ -568,7 +705,7 @@ begin
     'days',
     'cells',
     'latest_sync_at'
-  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(daily)) <> 9 then
+  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(daily)) <> 10 then
     raise exception 'public response fields are incorrect: %', daily;
   end if;
   if daily ? 'total_names' or daily ? 'last_synced_at' then
@@ -603,6 +740,11 @@ begin
   where values.value ->> 'key_name' = 'sql-test'
     and values.value ->> 'date' = '2026-01-01';
   if cell is null
+    or cell -> 'source_bytes' is distinct from '"65"'::jsonb
+    or cell -> 'gpt_source_bytes' is distinct from '"15"'::jsonb
+    or cell -> 'claude_source_bytes' is distinct from '"20"'::jsonb
+    or cell -> 'grok_source_bytes' is distinct from '"30"'::jsonb
+    or cell -> 'usage_precision' is distinct from '"exact"'::jsonb
     or cell -> 'jsonl_bytes' is distinct from '"650"'::jsonb
     or cell -> 'gpt_bytes' is distinct from '"150"'::jsonb
     or cell -> 'claude_bytes' is distinct from '"200"'::jsonb
@@ -613,13 +755,42 @@ begin
   if cell ? 'name' or not cell ?& array[
     'date',
     'key_name',
+    'source_bytes',
+    'gpt_source_bytes',
+    'claude_source_bytes',
+    'grok_source_bytes',
+    'usage_precision',
     'jsonl_bytes',
     'gpt_bytes',
     'claude_bytes',
     'grok_bytes',
     'batch_count'
-  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(cell)) <> 7 then
+  ] or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(cell)) <> 12 then
     raise exception 'public cell fields are incorrect: %', cell;
+  end if;
+
+  daily := public.get_public_daily_usage(
+    date '2026-01-05',
+    date '2026-01-05',
+    '',
+    1,
+    20
+  );
+  select values.value
+  into cell
+  from pg_catalog.jsonb_array_elements(daily -> 'cells') as values(value)
+  where values.value ->> 'key_name' = 'sql-history';
+  if cell is null
+    or cell -> 'source_bytes' is distinct from '"60"'::jsonb
+    or cell -> 'gpt_source_bytes' is distinct from '"10"'::jsonb
+    or cell -> 'claude_source_bytes' is distinct from '"50"'::jsonb
+    or cell -> 'grok_source_bytes' is distinct from '"0"'::jsonb
+    or cell -> 'usage_precision' is distinct from '"batch_only"'::jsonb
+    or cell -> 'jsonl_bytes' is distinct from 'null'::jsonb
+    or cell -> 'gpt_bytes' is distinct from 'null'::jsonb
+    or cell -> 'claude_bytes' is distinct from 'null'::jsonb
+    or cell -> 'grok_bytes' is distinct from 'null'::jsonb then
+    raise exception 'batch_only public cell fabricated per-name JSONL: %', daily;
   end if;
 
   large_payload := pg_catalog.jsonb_build_object(
@@ -756,7 +927,7 @@ begin
     raise exception 'test rows were not hidden after live ingestion: %', daily;
   end if;
   if daily #>> '{pagination,total}' <> '1'
-    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","jsonl_bytes":"400","batch_count":1}]'::jsonb then
+    or not (daily -> 'cells') @> '[{"date":"2026-01-01","key_name":"sql-live","source_bytes":"40","usage_precision":"exact","jsonl_bytes":"400","batch_count":1}]'::jsonb then
     raise exception 'live public response is incorrect: %', daily;
   end if;
 end;

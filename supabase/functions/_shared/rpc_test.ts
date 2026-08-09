@@ -52,7 +52,7 @@ Deno.test("callSupabaseRpc returns structured PostgREST errors", async () => {
   });
 });
 
-Deno.test("callSupabaseRpc preserves decimal-string byte totals", async () => {
+Deno.test("callSupabaseRpc preserves source-byte strings and nullable history JSONL", async () => {
   const result = await callSupabaseRpc(
     {
       url: "https://project.supabase.co",
@@ -63,7 +63,7 @@ Deno.test("callSupabaseRpc preserves decimal-string byte totals", async () => {
     () =>
       Promise.resolve(
         new Response(
-          '{"cells":[{"jsonl_bytes":"9007199254740993","gpt_bytes":"9007199254740993","claude_bytes":"0","grok_bytes":"0"}]}',
+          '{"metric_basis":"source_bytes","cells":[{"source_bytes":"9007199254740993","usage_precision":"batch_only","jsonl_bytes":null}]}',
           { headers: { "content-type": "application/json" } },
         ),
       ),
@@ -71,11 +71,11 @@ Deno.test("callSupabaseRpc preserves decimal-string byte totals", async () => {
 
   assert.deepEqual(result, {
     data: {
+      metric_basis: "source_bytes",
       cells: [{
-        jsonl_bytes: "9007199254740993",
-        gpt_bytes: "9007199254740993",
-        claude_bytes: "0",
-        grok_bytes: "0",
+        source_bytes: "9007199254740993",
+        usage_precision: "batch_only",
+        jsonl_bytes: null,
       }],
     },
     error: null,

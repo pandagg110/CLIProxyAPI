@@ -15,6 +15,11 @@ function response(url: URL, overrides: Record<string, unknown> = {}) {
   const cell = {
     date: to,
     key_name: "运营一组",
+    source_bytes: "7007199254740993",
+    gpt_source_bytes: "7007199254740000",
+    claude_source_bytes: "993",
+    grok_source_bytes: "0",
+    usage_precision: "exact",
     jsonl_bytes: "9007199254740993",
     gpt_bytes: "9007199254740000",
     claude_bytes: "993",
@@ -22,6 +27,7 @@ function response(url: URL, overrides: Record<string, unknown> = {}) {
     batch_count: 2,
   };
   return {
+    metric_basis: "source_bytes",
     timezone: "Asia/Hong_Kong",
     from,
     to,
@@ -29,7 +35,17 @@ function response(url: URL, overrides: Record<string, unknown> = {}) {
     pagination: { page, page_size: 5, total: 6 },
     names: ["运营一组", "运营二组", "研发", "客服", "市场"],
     days: dateRange(from, to),
-    cells: [cell, { ...cell, key_name: "运营二组", jsonl_bytes: "0", gpt_bytes: "0", claude_bytes: "0" }],
+    cells: [cell, {
+      ...cell,
+      key_name: "运营二组",
+      source_bytes: "0",
+      gpt_source_bytes: "0",
+      claude_source_bytes: "0",
+      grok_source_bytes: "0",
+      jsonl_bytes: "0",
+      gpt_bytes: "0",
+      claude_bytes: "0",
+    }],
     latest_sync_at: "2026-08-08T03:00:00Z",
     ...overrides,
   };
@@ -48,7 +64,7 @@ async function mockDaily(page: Page, responder: (url: URL, route: Route) => Prom
   });
 }
 
-test("shows the initial seven-day semantic matrix with exact bytes", async ({ page }) => {
+test("shows the initial seven-day semantic matrix with exact source bytes", async ({ page }) => {
   let requested: URL | undefined;
   await mockDaily(page, async (url, route) => {
     requested = url;
@@ -57,8 +73,9 @@ test("shows the initial seven-day semantic matrix with exact bytes", async ({ pa
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "日志用量统计" })).toBeVisible();
-  await expect(page.getByRole("table", { name: "每日 API Key 日志字节矩阵" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "每日原始日志字节" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "每日 API Key 原始日志字节矩阵" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ })).toBeVisible();
   expect(requested?.searchParams.get("page_size")).toBe("5");
   const from = Date.parse(`${requested?.searchParams.get("from")}T00:00:00Z`);
   const to = Date.parse(`${requested?.searchParams.get("to")}T00:00:00Z`);
@@ -109,14 +126,16 @@ test("persists search and moves through five-name pages", async ({ page }) => {
 test("opens exact provider details by click and keyboard and closes with Escape", async ({ page }) => {
   await mockDaily(page);
   await page.goto("/");
-  const usageCell = page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ });
+  const usageCell = page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ });
   await usageCell.focus();
   await usageCell.press("Enter");
   const dialog = page.getByRole("dialog", { name: "日志明细" });
-  await expect(dialog).toContainText("2026-08-08");
+  await expect(dialog).toContainText(new URL(page.url()).searchParams.get("to")!);
   await expect(dialog).toContainText("运营一组");
+  await expect(dialog).toContainText("原始日志总字节");
   await expect(dialog).toContainText("GPT");
-  await expect(dialog).toContainText("9,007,199,254,740,000 B");
+  await expect(dialog).toContainText("7,007,199,254,740,000 B");
+  await expect(dialog).toContainText("归一化 JSONL 总字节");
   await expect(dialog).toContainText("批次数：2");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
@@ -124,6 +143,30 @@ test("opens exact provider details by click and keyboard and closes with Escape"
   await usageCell.press("Enter");
   await page.getByRole("button", { name: "关闭明细" }).click();
   await expect(usageCell).toBeFocused();
+});
+
+test("labels historical batch-only cells without inventing per-name JSONL", async ({ page }) => {
+  await mockDaily(page, async (url, route) => {
+    const payload = response(url);
+    await route.fulfill({ json: {
+      ...payload,
+      cells: [{
+        ...payload.cells[0],
+        usage_precision: "batch_only",
+        jsonl_bytes: null,
+        gpt_bytes: null,
+        claude_bytes: null,
+        grok_bytes: null,
+      }],
+    } });
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ }).click();
+
+  const dialog = page.getByRole("dialog", { name: "日志明细" });
+  await expect(dialog).toContainText("历史无逐人精确 JSONL");
+  await expect(dialog).not.toContainText("归一化 JSONL 总字节");
 });
 
 test("shows a prominent test-data notice and an empty state", async ({ page }) => {
@@ -149,7 +192,7 @@ test("hides backend details on RPC failure and retries", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("数据暂时无法加载，请稍后重试。");
   await expect(page.getByText("secret rpc stack")).toHaveCount(0);
   await page.getByRole("button", { name: "重试" }).click();
-  await expect(page.getByRole("table", { name: "每日 API Key 日志字节矩阵" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "每日 API Key 原始日志字节矩阵" })).toBeVisible();
   expect(attempts).toBe(2);
 });
 
@@ -159,7 +202,7 @@ test("supports mobile horizontal scrolling and keyboard cell activation", async 
   await page.goto("/");
   const region = page.getByTestId("matrix-scroll");
   await expect.poll(() => region.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
-  const usageCell = page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ });
+  const usageCell = page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ });
   await usageCell.focus();
   await usageCell.press("Space");
   await expect(page.getByRole("dialog", { name: "日志明细" })).toBeVisible();
@@ -182,7 +225,7 @@ test("preserves an unsubmitted search draft, focus, and selection after a deferr
   });
 
   release();
-  await expect(page.getByRole("table", { name: "每日 API Key 日志字节矩阵" })).toBeVisible();
+  await expect(page.getByRole("table", { name: "每日 API Key 原始日志字节矩阵" })).toBeVisible();
   await expect(search).toHaveValue("财务");
   await expect(search).toBeFocused();
   expect(await search.evaluate((element) => {
@@ -201,7 +244,7 @@ test("keeps an open cell dialog and focus while a refresh is loading", async ({ 
     await route.fulfill({ json: response(url) });
   });
   await page.goto("/");
-  const cellButton = page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ });
+  const cellButton = page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ });
   await cellButton.click();
   await expect(page.getByRole("dialog", { name: "日志明细" })).toBeVisible();
 
@@ -222,7 +265,7 @@ test("keeps an open cell dialog and focus while a refresh is loading", async ({ 
   await expect(page.getByRole("status")).toContainText("数据已更新");
   await expect(dialog).toBeVisible();
   await page.getByRole("button", { name: "关闭明细" }).click();
-  await expect(page.getByRole("button", { name: /运营一组.*9,007,199,254,740,993 B/ })).toBeFocused();
+  await expect(page.getByRole("button", { name: /运营一组.*7,007,199,254,740,993 B/ })).toBeFocused();
 });
 
 test("replaces auto page correction so back can reach an earlier filter state", async ({ page }) => {

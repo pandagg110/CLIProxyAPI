@@ -49,6 +49,7 @@ Deno.test("validateIngestPayload accepts the exact external schema and defaults 
   if (result.ok) {
     const value = result.value as unknown as Record<string, unknown>;
     assert.equal(value.test_mode, false);
+    assert.equal(value.usage_precision, "exact");
     assert.equal(result.value.usage[0].key_name, " 张三 ");
     assert.deepEqual(Object.keys(value).sort(), [
       "archive_sha256",
@@ -66,8 +67,55 @@ Deno.test("validateIngestPayload accepts the exact external schema and defaults 
       "timezone",
       "usage",
       "usage_date",
+      "usage_precision",
     ]);
   }
+});
+
+Deno.test("validateIngestPayload accepts batch-only history and normalizes usage JSONL to null", () => {
+  const event = validEvent();
+  const historyEvent = {
+    ...event,
+    usage_precision: "batch_only",
+    usage: event.usage.map(({ jsonl_bytes: _jsonlBytes, ...entry }) => entry),
+  };
+
+  const result = validateIngestPayload(historyEvent);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.usage_precision, "batch_only");
+    assert.deepEqual(
+      result.value.usage.map((entry) => entry.jsonl_bytes),
+      [null, null],
+    );
+  }
+});
+
+Deno.test("validateIngestPayload enforces JSONL precision rules", () => {
+  const event = validEvent();
+  const { jsonl_bytes: _jsonlBytes, ...withoutJSONL } = event.usage[0];
+  const exactWithoutJSONL = {
+    ...event,
+    usage: [withoutJSONL, event.usage[1]],
+  };
+  const batchOnlyWithJSONL = {
+    ...event,
+    usage_precision: "batch_only",
+  };
+
+  assert.deepEqual(validateIngestPayload(exactWithoutJSONL), {
+    ok: false,
+    error: "usage[0].jsonl_bytes must be a nonnegative safe integer",
+  });
+  assert.deepEqual(validateIngestPayload(batchOnlyWithJSONL), {
+    ok: false,
+    error: "batch_only usage jsonl_bytes must be null or omitted",
+  });
+  assert.deepEqual(
+    validateIngestPayload({ ...event, usage_precision: "estimated" }),
+    { ok: false, error: "usage_precision must be exact or batch_only" },
+  );
 });
 
 Deno.test("validateIngestPayload accepts an explicit test_mode", () => {
@@ -268,6 +316,37 @@ Deno.test("validateIngestPayload rejects secret-like key names without echoing t
       new RegExp(keyName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+Deno.test("validateIngestPayload applies the 48-code-point name limit", () => {
+  const accepted = validEvent();
+  accepted.usage[0].key_name = "😀".repeat(48);
+  assert.equal(validateIngestPayload(accepted).ok, true);
+
+  const rejectedName = "😀".repeat(49);
+  const rejected = validEvent();
+  rejected.usage[0].key_name = rejectedName;
+  const result = validateIngestPayload(rejected);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "key_name must contain from 1 to 48 characters",
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(rejectedName));
+});
+
+Deno.test("validateIngestPayload rejects trimmed cpa_ names case-insensitively", () => {
+  const rejectedName = "  CpA_private-name  ";
+  const event = validEvent();
+  event.usage[0].key_name = rejectedName;
+
+  const result = validateIngestPayload(event);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "key_name must be a display label, not a secret",
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(rejectedName));
 });
 
 Deno.test("validateIngestPayload rejects duplicate key_name and provider pairs", () => {

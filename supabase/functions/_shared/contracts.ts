@@ -1,13 +1,14 @@
 export const providers = ["codex", "fable5", "grok45"] as const;
 
 export type Provider = (typeof providers)[number];
+export type UsagePrecision = "exact" | "batch_only";
 
 export interface LogUsageEntry {
   key_name: string;
   provider: Provider;
   source_count: number;
   source_bytes: number;
-  jsonl_bytes: number;
+  jsonl_bytes: number | null;
 }
 
 export interface LogUsageEvent {
@@ -24,6 +25,7 @@ export interface LogUsageEvent {
   source_bytes: number;
   jsonl_bytes: number;
   compressed_bytes: number;
+  usage_precision: UsagePrecision;
   test_mode: boolean;
   usage: LogUsageEntry[];
 }
@@ -36,14 +38,20 @@ export interface IngestRpcResponse {
 export interface DailyUsageCell {
   date: string;
   key_name: string;
-  jsonl_bytes: string;
-  gpt_bytes: string;
-  claude_bytes: string;
-  grok_bytes: string;
+  source_bytes: string;
+  gpt_source_bytes: string;
+  claude_source_bytes: string;
+  grok_source_bytes: string;
+  usage_precision: UsagePrecision;
+  jsonl_bytes: string | null;
+  gpt_bytes: string | null;
+  claude_bytes: string | null;
+  grok_bytes: string | null;
   batch_count: number;
 }
 
 export interface PublicDailyUsageResponse {
+  metric_basis: "source_bytes";
   timezone: string;
   from: string;
   to: string;
@@ -87,6 +95,7 @@ const ingestPayloadFields = new Set([
   "source_bytes",
   "jsonl_bytes",
   "compressed_bytes",
+  "usage_precision",
   "test_mode",
   "usage",
 ]);
@@ -142,6 +151,7 @@ function isSafeObjectKey(value: string): boolean {
 function isSecretLikeKeyName(value: string): boolean {
   const candidate = value.trim();
   if (
+    /^cpa_/i.test(candidate) ||
     /^sk-\S+/i.test(candidate) ||
     /^bearer\s+\S+/i.test(candidate) ||
     /^[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}$/i.test(
@@ -345,6 +355,12 @@ export function validateIngestPayload(
   if (!Array.isArray(input.usage)) {
     return { ok: false, error: "usage must be an array" };
   }
+  const usagePrecision = Object.hasOwn(input, "usage_precision")
+    ? input.usage_precision
+    : "exact";
+  if (usagePrecision !== "exact" && usagePrecision !== "batch_only") {
+    return { ok: false, error: "usage_precision must be exact or batch_only" };
+  }
 
   const usage: LogUsageEntry[] = [];
   const pairs = new Set<string>();
@@ -361,16 +377,25 @@ export function validateIngestPayload(
         error: "usage entries contain unsupported fields",
       };
     }
-    if (!isRequiredText(rawEntry.key_name, 256)) {
+    if (
+      typeof rawEntry.key_name !== "string" ||
+      rawEntry.key_name.trim().length === 0
+    ) {
       return {
         ok: false,
-        error: `usage[${index}].key_name must be non-empty text`,
+        error: "key_name must contain from 1 to 48 characters",
       };
     }
     if (isSecretLikeKeyName(rawEntry.key_name)) {
       return {
         ok: false,
         error: "key_name must be a display label, not a secret",
+      };
+    }
+    if (Array.from(rawEntry.key_name.trim()).length > 48) {
+      return {
+        ok: false,
+        error: "key_name must contain from 1 to 48 characters",
       };
     }
     if (
@@ -382,9 +407,7 @@ export function validateIngestPayload(
         error: `usage[${index}].provider must be codex, fable5, or grok45`,
       };
     }
-    for (
-      const field of ["source_count", "source_bytes", "jsonl_bytes"] as const
-    ) {
+    for (const field of ["source_count", "source_bytes"] as const) {
       if (!isNonnegativeSafeInteger(rawEntry[field])) {
         return {
           ok: false,
@@ -403,10 +426,32 @@ export function validateIngestPayload(
     pairs.add(pair);
     const entrySourceCount = rawEntry.source_count as number;
     const entrySourceBytes = rawEntry.source_bytes as number;
-    const entryJSONLBytes = rawEntry.jsonl_bytes as number;
+    let entryJSONLBytes: number | null;
+    if (usagePrecision === "exact") {
+      if (!isNonnegativeSafeInteger(rawEntry.jsonl_bytes)) {
+        return {
+          ok: false,
+          error:
+            `usage[${index}].jsonl_bytes must be a nonnegative safe integer`,
+        };
+      }
+      entryJSONLBytes = rawEntry.jsonl_bytes;
+    } else {
+      if (
+        Object.hasOwn(rawEntry, "jsonl_bytes") && rawEntry.jsonl_bytes !== null
+      ) {
+        return {
+          ok: false,
+          error: "batch_only usage jsonl_bytes must be null or omitted",
+        };
+      }
+      entryJSONLBytes = null;
+    }
     sourceCount += entrySourceCount;
     sourceBytes += entrySourceBytes;
-    jsonlBytes += entryJSONLBytes;
+    if (entryJSONLBytes !== null) {
+      jsonlBytes += entryJSONLBytes;
+    }
     if (![sourceCount, sourceBytes, jsonlBytes].every(Number.isSafeInteger)) {
       return { ok: false, error: "usage totals exceed the safe integer range" };
     }
@@ -422,7 +467,7 @@ export function validateIngestPayload(
   if (
     sourceCount !== input.source_count ||
     sourceBytes !== input.source_bytes ||
-    jsonlBytes !== input.jsonl_bytes
+    (usagePrecision === "exact" && jsonlBytes !== input.jsonl_bytes)
   ) {
     return { ok: false, error: "batch totals must equal usage totals" };
   }
@@ -441,8 +486,9 @@ export function validateIngestPayload(
       usage_date: input.usage_date,
       source_count: input.source_count,
       source_bytes: input.source_bytes,
-      jsonl_bytes: input.jsonl_bytes,
+      jsonl_bytes: input.jsonl_bytes as number,
       compressed_bytes: input.compressed_bytes as number,
+      usage_precision: usagePrecision,
       test_mode: typeof input.test_mode === "boolean" ? input.test_mode : false,
       usage,
     },

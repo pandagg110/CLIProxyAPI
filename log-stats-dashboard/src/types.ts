@@ -5,17 +5,25 @@ export interface DashboardQuery {
   page: number;
 }
 
+export type UsagePrecision = "exact" | "batch_only";
+
 export interface DailyUsageCell {
   date: string;
   key_name: string;
-  jsonl_bytes: string;
-  gpt_bytes: string;
-  claude_bytes: string;
-  grok_bytes: string;
+  source_bytes: string;
+  gpt_source_bytes: string;
+  claude_source_bytes: string;
+  grok_source_bytes: string;
+  usage_precision: UsagePrecision;
+  jsonl_bytes: string | null;
+  gpt_bytes: string | null;
+  claude_bytes: string | null;
+  grok_bytes: string | null;
   batch_count: number;
 }
 
 export interface DailyUsageResponse {
+  metric_basis: "source_bytes";
   timezone: string;
   from: string;
   to: string;

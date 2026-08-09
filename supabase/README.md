@@ -2,7 +2,8 @@
 
 This directory contains the private ingestion path and public daily statistics
 API for name-based log volume reporting. It stores batch metadata and exact
-`key_name` labels, but it must never receive a raw API key, access token,
+`key_name` labels. The public per-name metric is exact `source_bytes`, matching
+the server uploader's complete source-log accounting. It must never receive a raw API key, access token,
 authorization header, or raw log content.
 
 ## Data contract
@@ -14,8 +15,10 @@ Authorization: Bearer <LOG_STATS_INGEST_TOKEN>
 Content-Type: application/json
 ```
 
-See [`examples/ingest-event.json`](examples/ingest-event.json) for a complete
-request. The request contains:
+See [`examples/ingest-event.json`](examples/ingest-event.json) for a live exact
+request and [`examples/ingest-history-event.json`](examples/ingest-history-event.json)
+for local-ledger history that intentionally has no per-name JSONL allocation.
+The request contains:
 
 - `schema_version`: must be `1`.
 - `event_id`: immutable idempotency key for one uploaded batch. It must begin
@@ -28,20 +31,27 @@ request. The request contains:
   `hour_start` in the named IANA timezone. `hour_start` must include `Z` or a
   numeric UTC offset.
 - `source_count`, `source_bytes`, and `jsonl_bytes`: nonnegative batch totals
-  that must equal the sums of the `usage` rows.
+  that must equal the sums of the `usage` rows for exact events. Batch JSONL
+  remains exact for history events even though per-name JSONL is unknown.
 - `compressed_bytes`: nonnegative compressed archive size.
+- `usage_precision`: optional `exact | batch_only`; defaults to `exact`.
+  `exact` requires every usage row to include `jsonl_bytes` and validates all
+  three sums. `batch_only` requires per-name `jsonl_bytes` to be omitted or
+  `null`, and validates only `source_count` and `source_bytes` sums.
 - `test_mode`: optional boolean that marks synthetic data and defaults to
   `false`. External `is_test` is rejected; `is_test` is only the internal table
   column.
 - `usage`: unique exact `key_name` plus provider rows with nonnegative
-  `source_count`, `source_bytes`, and `jsonl_bytes`.
+  `source_count` and `source_bytes`, and precision-dependent `jsonl_bytes`.
 
 The top-level object and every `usage` object reject unknown fields. Rejection
 messages are generic and do not include submitted values. `object_key` must be a
 relative object-store key: URLs, URI schemes, query strings, fragments, absolute
 paths, backslashes, and `..` traversal segments are rejected. `key_name` remains
 an exact display label, but API-key prefixes, bearer tokens, JWT-shaped strings,
-and long token-like ASCII strings are rejected.
+and long token-like ASCII strings are rejected. After trimming for validation,
+names must contain from 1 to 48 Unicode code points and must not start with
+`cpa_` in any letter case. Rejection errors never echo the submitted name.
 
 `event_id` and `target_id` also reject secret prefixes, JWT-shaped values, URLs,
 paths, whitespace, and log-like content. These checks run independently in the
@@ -63,11 +73,11 @@ function does not log the request body or authorization token.
 
 Supported providers and public dashboard fields are:
 
-| Ingest provider | Daily cell field | Meaning                                |
-| --------------- | ---------------- | -------------------------------------- |
-| `codex`         | `gpt_bytes`      | Sum of per-name normalized JSONL bytes |
-| `fable5`        | `claude_bytes`   | Sum of per-name normalized JSONL bytes |
-| `grok45`        | `grok_bytes`     | Sum of per-name normalized JSONL bytes |
+| Ingest provider | Daily source field    | Meaning                         |
+| --------------- | --------------------- | ------------------------------- |
+| `codex`         | `gpt_source_bytes`    | Complete source-log bytes by name |
+| `fable5`        | `claude_source_bytes` | Complete source-log bytes by name |
+| `grok45`        | `grok_source_bytes`   | Complete source-log bytes by name |
 
 Accepted `key_name` values are stored and returned exactly as submitted.
 
@@ -86,17 +96,23 @@ optional query parameters are:
 - `page`: optional integer from 1 to 2147483647; default `1`.
 - `page_size`: optional integer from 1 to 20; default `20`.
 
-The compact response contains `timezone`, `from`, `to`, `using_test_data`,
+The compact response contains `metric_basis: "source_bytes"`, `timezone`,
+`from`, `to`, `using_test_data`,
 `pagination`, `names`, `days`, `cells`, and `latest_sync_at`. `pagination`
 contains `page`, `page_size`, and the pre-pagination name `total`. `names` is
 the requested page. `days` contains every date in the requested range. Each cell
-contains `date`, `key_name`, total `jsonl_bytes`, provider totals `gpt_bytes`,
-`claude_bytes`, and `grok_bytes`, plus `batch_count`, which counts distinct
-events for that name/date. Recorded all-zero cells are retained; a date with no
-event has no cell entry while remaining present in `days`.
+contains `date`, `key_name`, exact total `source_bytes`, provider source totals
+`gpt_source_bytes`, `claude_source_bytes`, and `grok_source_bytes`, plus
+`usage_precision` and `batch_count`. Recorded all-zero cells are retained; a
+date with no event has no cell entry while remaining present in `days`.
 
-The four byte-total fields are base-10 JSON strings so values above JavaScript's
-safe-integer limit remain exact. `batch_count` and all `pagination` fields
+For cells whose every contributing event is `exact`, `jsonl_bytes` and the
+legacy provider JSONL fields `gpt_bytes`, `claude_bytes`, and `grok_bytes` are
+exact decimal strings. If any contributing event is `batch_only`, all four
+per-name JSONL fields are JSON `null`; they are never estimated or allocated.
+
+All available byte-total fields are base-10 JSON strings so values above
+JavaScript's safe-integer limit remain exact. `batch_count` and all `pagination` fields
 remain JSON numbers. Ingest request byte fields remain safe-integer JSON
 numbers. See [`examples/daily-response.json`](examples/daily-response.json) for
 a complete public response example.
@@ -148,11 +164,10 @@ span multiple orders of magnitude.
 
 ## Deployment
 
-The following commands document deployment to project `anloatxlyajorkfhbaak`.
-Review the migration and set a new high-entropy token before running them:
+Review the migration and set a new high-entropy token before running deployment:
 
 ```bash
-supabase link --project-ref anloatxlyajorkfhbaak
+supabase link --project-ref '<project-ref>'
 supabase db push
 supabase secrets set LOG_STATS_INGEST_TOKEN='<long-random-value>'
 supabase functions deploy ingest-log-usage --no-verify-jwt
