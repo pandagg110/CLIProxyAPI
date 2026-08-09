@@ -1,7 +1,7 @@
 # Supabase log usage backend
 
-This directory contains the private ingestion path and public daily statistics
-API for name-based log volume reporting. It stores batch metadata and exact
+This directory contains the private ingestion path and public daily and hourly
+APIs for name-based log volume reporting. It stores batch metadata and exact
 `key_name` labels. The public per-name metric is exact `source_bytes`, matching
 the server uploader's complete source-log accounting. It must never receive a raw API key, access token,
 authorization header, or raw log content.
@@ -73,7 +73,7 @@ function does not log the request body or authorization token.
 
 Supported providers and public dashboard fields are:
 
-| Ingest provider | Daily source field    | Meaning                         |
+| Ingest provider | Public source field   | Meaning                         |
 | --------------- | --------------------- | ------------------------------- |
 | `codex`         | `gpt_source_bytes`    | Complete source-log bytes by name |
 | `fable5`        | `claude_source_bytes` | Complete source-log bytes by name |
@@ -87,6 +87,15 @@ Accepted `key_name` values are stored and returned exactly as submitted.
 committed `dashboard_html.ts` is a safe deployment error page and is intended to
 be overwritten by the frontend build.
 
+The restricted database API exposes two public reporting RPCs:
+
+- `get_public_daily_usage` returns an exact source-byte summary and daily totals
+  for the requested range. These rollups are independent of the 20-name
+  transport page, so pagination changes only `names` and `cells`.
+- `get_public_hourly_usage` accepts one date and one exact key_name returned by
+  the daily RPC. Its `hours` array contains sparse archive hours, not
+  request-event hours, and does not synthesize archive-free hours.
+
 `GET /functions/v1/log-usage-dashboard?api=daily` returns JSON. Required and
 optional query parameters are:
 
@@ -97,25 +106,33 @@ optional query parameters are:
 - `page_size`: optional integer from 1 to 20; default `20`.
 
 The compact response contains `metric_basis: "source_bytes"`, `timezone`,
-`from`, `to`, `using_test_data`,
-`pagination`, `names`, `days`, `cells`, and `latest_sync_at`. `pagination`
+`from`, `to`, `using_test_data`, `pagination`, `names`, `days`, `cells`,
+`summary`, `daily_totals`, and `latest_sync_at`. `pagination`
 contains `page`, `page_size`, and the pre-pagination name `total`. `names` is
 the requested page. `days` contains every date in the requested range. Each cell
 contains `date`, `key_name`, exact total `source_bytes`, provider source totals
-`gpt_source_bytes`, `claude_source_bytes`, and `grok_source_bytes`, plus
-`usage_precision` and `batch_count`. Recorded all-zero cells are retained; a
-date with no event has no cell entry while remaining present in `days`.
+`gpt_source_bytes`, `claude_source_bytes`, and `grok_source_bytes`, plus exact
+`source_count`, `usage_precision`, and `batch_count`. `summary` contains exact
+source bytes and page-independent archive, archive-hour, active-key, and day
+counts. `daily_totals` contains one ascending entry for every value in `days`,
+including zero totals for dates with no matching event. Recorded all-zero cells
+are retained; a date with no event has no cell entry while remaining present in
+`days`.
 
 For cells whose every contributing event is `exact`, `jsonl_bytes` and the
 legacy provider JSONL fields `gpt_bytes`, `claude_bytes`, and `grok_bytes` are
 exact decimal strings. If any contributing event is `batch_only`, all four
 per-name JSONL fields are JSON `null`; they are never estimated or allocated.
+Historical `batch_only` data does not fabricate per-key JSONL or compressed
+bytes. The hourly RPC exposes source metrics only and never returns object keys
+or checksum fields.
 
 All available byte-total fields are base-10 JSON strings so values above
 JavaScript's safe-integer limit remain exact. `batch_count` and all `pagination` fields
 remain JSON numbers. Ingest request byte fields remain safe-integer JSON
-numbers. See [`examples/daily-response.json`](examples/daily-response.json) for
-a complete public response example.
+numbers. See [`examples/daily-response.json`](examples/daily-response.json) and
+[`examples/hourly-response.json`](examples/hourly-response.json) for complete
+public RPC response examples.
 
 The database applies a global live-data switch. While no batch stored with the
 internal `is_test=false` value exists, the public RPC shows synthetic rows. As
@@ -124,14 +141,16 @@ including test rows on other dates.
 
 ## Security model
 
-Both tables have RLS enabled and direct table privileges are revoked from `anon`
-and `authenticated`.
+Both underlying tables remain private with RLS enabled, and direct table
+privileges are revoked from `anon` and `authenticated`.
 
 - `ingest_log_usage_v1` is `SECURITY DEFINER` with a fixed search path and is
   executable only by `service_role`.
 - `get_public_daily_usage` is `SECURITY DEFINER` with a fixed search path and is
   executable only by `anon` and `authenticated`.
-- Edge platform JWT verification is disabled for both functions. Ingestion uses
+- `get_public_hourly_usage` is `SECURITY DEFINER` with a fixed search path and is
+  executable only by `anon` and `authenticated`.
+- Edge platform JWT verification is disabled for both Edge Functions. Ingestion uses
   the independent `LOG_STATS_INGEST_TOKEN`; the dashboard is intentionally
   public and reads through the restricted RPC.
 - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
@@ -142,19 +161,29 @@ and `authenticated`.
 
 From the repository root:
 
-```bash
+```powershell
 deno test --allow-env --allow-read supabase/functions supabase/tests/backend_contract_test.ts
 supabase start
 supabase db reset --local --sql-paths seed.sql
+Get-Content -Raw -LiteralPath 'supabase/tests/log_usage_assertions.sql' |
+  docker exec -i supabase_db_CLIProxyAPI psql -U postgres -d postgres -v ON_ERROR_STOP=1
+```
+
+The PowerShell pipeline targets this repository's default local Supabase
+container (`project_id = "CLIProxyAPI"`); use it when `psql` is unavailable on
+the host. If `psql` is installed on the host, the equivalent portable command
+is:
+
+```bash
 psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
   -v ON_ERROR_STOP=1 \
   -f supabase/tests/log_usage_assertions.sql
 ```
 
 The Deno backend contract tests inspect migration and assertion source
-contracts; they do not execute PostgreSQL. The `psql` command is required
-runtime validation for migrations, privileges, pagination, exact aggregates, and
-search behavior. The SQL assertion script runs in a transaction and rolls back
+contracts; they do not execute PostgreSQL. One of the `psql` commands is required
+for runtime validation of migrations, privileges, pagination, exact aggregates,
+and search behavior. The SQL assertion script runs in a transaction and rolls back
 its own test rows. `seed.sql` deterministically creates synthetic
 `test_mode=true` events for the dashboard range `2026-08-01` through
 `2026-08-07`. It covers 张三, 李四, and 王五 across all three providers,

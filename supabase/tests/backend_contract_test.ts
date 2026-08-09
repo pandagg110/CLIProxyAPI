@@ -634,11 +634,69 @@ Deno.test("hourly drill-down migration restricts exact-key archive metrics and A
   ]);
 });
 
-Deno.test("public daily response example distinguishes source bytes from optional JSONL", async () => {
-  const example = JSON.parse(await read("examples/daily-response.json"));
-  const cell = example.cells[0];
+Deno.test("public daily response example has exact summaries and page data", async () => {
+  const daily = JSON.parse(await read("examples/daily-response.json"));
+  const cell = daily.cells[0];
 
-  assert.equal(example.metric_basis, "source_bytes");
+  assert.deepEqual(Object.keys(daily).sort(), [
+    "cells",
+    "daily_totals",
+    "days",
+    "from",
+    "latest_sync_at",
+    "metric_basis",
+    "names",
+    "pagination",
+    "summary",
+    "timezone",
+    "to",
+    "using_test_data",
+  ]);
+  assert.equal(daily.metric_basis, "source_bytes");
+  assert.ok(daily.summary, "missing daily summary");
+  assert.ok(Array.isArray(daily.daily_totals), "missing daily totals");
+  assert.equal(typeof daily.summary.source_bytes, "string");
+  assert.equal(daily.daily_totals.length, daily.days.length);
+  assert.deepEqual(
+    daily.daily_totals.map((total: { date: string }) => total.date),
+    daily.days,
+  );
+  assert.deepEqual(daily.days, [...daily.days].sort());
+  assert.equal(
+    daily.daily_totals.reduce(
+      (sum: bigint, total: { source_bytes: string }) =>
+        sum + BigInt(total.source_bytes),
+      0n,
+    ).toString(),
+    daily.summary.source_bytes,
+  );
+  assert.equal(daily.summary.day_count, daily.days.length);
+  for (const total of daily.daily_totals) {
+    assert.deepEqual(Object.keys(total).sort(), [
+      "active_key_count",
+      "archive_count",
+      "archive_hour_count",
+      "date",
+      "source_bytes",
+    ]);
+    assert.equal(typeof total.source_bytes, "string");
+  }
+
+  assert.deepEqual(Object.keys(cell).sort(), [
+    "batch_count",
+    "claude_bytes",
+    "claude_source_bytes",
+    "date",
+    "gpt_bytes",
+    "gpt_source_bytes",
+    "grok_bytes",
+    "grok_source_bytes",
+    "jsonl_bytes",
+    "key_name",
+    "source_bytes",
+    "source_count",
+    "usage_precision",
+  ]);
   assert.equal(cell.source_bytes, "7007199254740993");
   assert.equal(cell.jsonl_bytes, null);
   for (
@@ -651,11 +709,221 @@ Deno.test("public daily response example distinguishes source bytes from optiona
   ) {
     assert.equal(typeof cell[field], "string");
   }
+  assert.equal(typeof daily.cells[0].source_count, "string");
+  assert.equal(
+    (
+      BigInt(cell.gpt_source_bytes) +
+      BigInt(cell.claude_source_bytes) +
+      BigInt(cell.grok_source_bytes)
+    ).toString(),
+    cell.source_bytes,
+  );
   assert.equal(cell.usage_precision, "batch_only");
   assert.equal(typeof cell.batch_count, "number");
-  assert.equal(typeof example.pagination.page, "number");
-  assert.equal(typeof example.pagination.page_size, "number");
-  assert.equal(typeof example.pagination.total, "number");
+  assert.equal(typeof daily.pagination.page, "number");
+  assert.equal(typeof daily.pagination.page_size, "number");
+  assert.equal(typeof daily.pagination.total, "number");
+});
+
+Deno.test("public hourly response example is sparse and exposes source metrics only", async () => {
+  let hourlySource: string | null = null;
+  try {
+    hourlySource = await read("examples/hourly-response.json");
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+  assert.ok(hourlySource, "missing hourly response example");
+  const hourly = JSON.parse(hourlySource);
+
+  assert.deepEqual(Object.keys(hourly).sort(), [
+    "date",
+    "hours",
+    "key_name",
+    "latest_sync_at",
+    "metric_basis",
+    "timezone",
+  ]);
+  assert.equal(hourly.metric_basis, "source_bytes");
+  assert.ok(Array.isArray(hourly.hours));
+  assert.ok(hourly.hours.length >= 2, "hourly example must show sparsity");
+
+  const hourStarts = hourly.hours.map(
+    (hour: { hour_start: string }) => hour.hour_start,
+  );
+  assert.deepEqual(hourStarts, [...hourStarts].sort());
+  assert.ok(
+    Date.parse(hourStarts[1]) - Date.parse(hourStarts[0]) > 60 * 60 * 1000,
+    "hourly example must omit an archive-free hour",
+  );
+
+  for (const hour of hourly.hours) {
+    assert.deepEqual(Object.keys(hour).sort(), [
+      "batch_count",
+      "claude_source_bytes",
+      "gpt_source_bytes",
+      "grok_source_bytes",
+      "hour_start",
+      "source_bytes",
+      "source_count",
+      "usage_precision",
+    ]);
+    assert.equal(typeof hour.source_count, "string");
+    assert.equal(typeof hour.source_bytes, "string");
+    for (
+      const field of [
+        "gpt_source_bytes",
+        "claude_source_bytes",
+        "grok_source_bytes",
+      ]
+    ) {
+      assert.equal(typeof hour[field], "string");
+    }
+    assert.equal(
+      (
+        BigInt(hour.gpt_source_bytes) +
+        BigInt(hour.claude_source_bytes) +
+        BigInt(hour.grok_source_bytes)
+      ).toString(),
+      hour.source_bytes,
+    );
+    assert.ok(["exact", "batch_only"].includes(hour.usage_precision));
+    assert.equal(typeof hour.batch_count, "number");
+    for (
+      const forbidden of [
+        "jsonl_bytes",
+        "compressed_bytes",
+        "object_key",
+        "archive_sha256",
+        "manifest_sha256",
+      ]
+    ) {
+      assert.ok(!(forbidden in hour), `hourly example exposes ${forbidden}`);
+    }
+  }
+  assert.deepEqual(
+    hourly.hours.map((hour: { usage_precision: string }) =>
+      hour.usage_precision
+    ),
+    ["batch_only", "exact"],
+  );
+
+  const daily = JSON.parse(await read("examples/daily-response.json"));
+  const dailyCell = daily.cells.find(
+    (cell: { date: string; key_name: string }) =>
+      cell.date === hourly.date && cell.key_name === hourly.key_name,
+  );
+  assert.ok(dailyCell, "hourly example must drill into the daily example");
+  assert.equal(hourly.timezone, daily.timezone);
+  assert.equal(hourly.latest_sync_at, daily.latest_sync_at);
+  for (
+    const field of [
+      "source_count",
+      "source_bytes",
+      "gpt_source_bytes",
+      "claude_source_bytes",
+      "grok_source_bytes",
+    ]
+  ) {
+    assert.equal(
+      hourly.hours.reduce(
+        (sum: bigint, hour: Record<string, string>) =>
+          sum + BigInt(hour[field]),
+        0n,
+      ).toString(),
+      dailyCell[field],
+      `hourly ${field} must reconcile with the daily cell`,
+    );
+  }
+  assert.equal(
+    hourly.hours.reduce(
+      (sum: number, hour: { batch_count: number }) => sum + hour.batch_count,
+      0,
+    ),
+    dailyCell.batch_count,
+  );
+  assert.equal(
+    hourly.hours.every(
+        (hour: { usage_precision: string }) => hour.usage_precision === "exact",
+      )
+      ? "exact"
+      : "batch_only",
+    dailyCell.usage_precision,
+  );
+
+  assert.match(
+    hourly.latest_sync_at,
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+  );
+  assert.ok(!Number.isNaN(Date.parse(hourly.latest_sync_at)));
+  assert.ok(
+    hourly.latest_sync_at.endsWith("+00:00"),
+    "latest_sync_at must show the UTC session serialization used by the example",
+  );
+  for (const hourStart of hourStarts) {
+    assert.match(
+      hourStart,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    );
+    assert.ok(!Number.isNaN(Date.parse(hourStart)));
+    assert.ok(
+      hourStart.endsWith("+00:00"),
+      "hour_start must show the UTC session serialization used by the example",
+    );
+    const dateParts = Object.fromEntries(
+      new Intl.DateTimeFormat("en", {
+        timeZone: hourly.timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(new Date(hourStart)).map((part) => [
+        part.type,
+        part.value,
+      ]),
+    );
+    assert.equal(
+      `${dateParts.year}-${dateParts.month}-${dateParts.day}`,
+      hourly.date,
+      "hour_start must belong to the requested date in the archive timezone",
+    );
+  }
+});
+
+Deno.test("README documents the public daily and hourly RPC contracts", async () => {
+  const readme = compact(await read("README.md"));
+
+  for (
+    const phrase of [
+      "get_public_daily_usage",
+      "exact source-byte summary",
+      "daily totals",
+      "independent of the 20-name transport page",
+      "get_public_hourly_usage",
+      "exact key_name",
+      "sparse archive hours",
+      "not request-event hours",
+      "does not fabricate per-key jsonl or compressed bytes",
+      "underlying tables remain private with rls",
+      "jwt verification is disabled for both edge functions",
+    ]
+  ) {
+    assert.ok(readme.includes(phrase), `README is missing: ${phrase}`);
+  }
+  assert.match(
+    readme,
+    /get-content -raw -literalpath 'supabase\/tests\/log_usage_assertions\.sql' \| docker exec -i supabase_db_cliproxyapi psql -u postgres -d postgres -v on_error_stop=1/,
+  );
+  assert.ok(
+    !readme.includes("because the host does not provide `psql`"),
+    "README must not assume every host lacks psql",
+  );
+  assert.ok(readme.includes("when `psql` is unavailable on the host"));
+  assert.ok(
+    readme.includes(
+      "postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+    ),
+  );
 });
 
 Deno.test("seed is deterministic test data with a seven-day query range and a full missing event date", async () => {

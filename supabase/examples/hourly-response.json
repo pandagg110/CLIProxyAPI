@@ -1,0 +1,29 @@
+{
+  "metric_basis": "source_bytes",
+  "timezone": "Asia/Shanghai",
+  "date": "2026-08-08",
+  "key_name": "张三",
+  "latest_sync_at": "2026-08-08T03:05:00+00:00",
+  "hours": [
+    {
+      "hour_start": "2026-08-07T16:00:00+00:00",
+      "source_count": "41",
+      "source_bytes": "7007199254740963",
+      "gpt_source_bytes": "7007199254740963",
+      "claude_source_bytes": "0",
+      "grok_source_bytes": "0",
+      "batch_count": 1,
+      "usage_precision": "batch_only"
+    },
+    {
+      "hour_start": "2026-08-07T19:00:00+00:00",
+      "source_count": "1",
+      "source_bytes": "30",
+      "gpt_source_bytes": "30",
+      "claude_source_bytes": "0",
+      "grok_source_bytes": "0",
+      "batch_count": 1,
+      "usage_precision": "exact"
+    }
+  ]
+}
