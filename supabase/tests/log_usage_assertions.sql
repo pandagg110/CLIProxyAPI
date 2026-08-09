@@ -301,6 +301,89 @@ begin
 end;
 $assert_public_name_filter$;
 
+do $assert_blank_public_names$
+declare
+  daily jsonb;
+begin
+  alter table public.log_upload_usage
+    drop constraint log_upload_usage_key_name_not_blank;
+
+  insert into public.log_upload_batches (
+    event_id,
+    target_id,
+    object_key,
+    archive_sha256,
+    manifest_sha256,
+    hour_start,
+    timezone,
+    usage_date,
+    source_count,
+    source_bytes,
+    jsonl_bytes,
+    compressed_bytes,
+    payload_sha256,
+    is_test,
+    usage_precision
+  ) values (
+    'sql-assert-blank-only',
+    'assertions',
+    'assertions/blank-only.jsonl.zst',
+    pg_catalog.repeat('a', 64),
+    pg_catalog.repeat('b', 64),
+    '2026-01-08T00:00:00Z',
+    'UTC',
+    date '2026-01-08',
+    2,
+    2,
+    2,
+    1,
+    pg_catalog.repeat('c', 64),
+    true,
+    'exact'
+  );
+
+  insert into public.log_upload_usage (
+    event_id,
+    key_name,
+    provider,
+    source_count,
+    source_bytes,
+    jsonl_bytes
+  ) values
+    ('sql-assert-blank-only', '', 'codex', 1, 1, 1),
+    ('sql-assert-blank-only', '   ', 'codex', 1, 1, 1);
+
+  daily := public.get_public_daily_usage(
+    date '2026-01-08',
+    date '2026-01-08',
+    '',
+    1,
+    20
+  );
+  if daily #>> '{pagination,total}' is distinct from '0'
+    or daily -> 'names' is distinct from '[]'::jsonb
+    or daily -> 'cells' is distinct from '[]'::jsonb then
+    raise exception 'blank-only public query leaked blank names';
+  end if;
+
+  if (
+    select pg_catalog.count(*)
+    from public.log_upload_usage
+    where event_id = 'sql-assert-blank-only'
+      and pg_catalog.btrim(key_name) = ''
+  ) <> 2 then
+    raise exception 'blank public filtering removed private rows';
+  end if;
+
+  delete from public.log_upload_batches
+  where event_id = 'sql-assert-blank-only';
+
+  alter table public.log_upload_usage
+    add constraint log_upload_usage_key_name_not_blank
+    check (pg_catalog.btrim(key_name) <> '');
+end;
+$assert_blank_public_names$;
+
 do $assert_behavior$
 declare
   test_payload jsonb;

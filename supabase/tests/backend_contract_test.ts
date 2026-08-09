@@ -395,6 +395,7 @@ Deno.test("SQL assertion source declares behavior and privilege coverage", async
       "fallback names changed public aggregate",
       "fallback names changed public pagination",
       "fallback search leaked hidden names",
+      "blank-only public query leaked blank names",
     ]
   ) {
     assert.ok(
