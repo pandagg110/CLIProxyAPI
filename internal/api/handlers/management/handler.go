@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -38,33 +39,124 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                     *config.Config
-	configFilePath          string
-	mu                      sync.Mutex
-	reloadMu                sync.Mutex
-	reloadGeneration        uint64
-	appliedReloadGeneration uint64
-	attemptsMu              sync.Mutex
-	failedAttempts          map[string]*attemptInfo // keyed by client IP
-	authManager             *coreauth.Manager
-	tokenStore              coreauth.Store
-	localPassword           string
-	allowRemoteOverride     bool
-	envSecret               string
-	logDir                  string
-	postAuthHook            coreauth.PostAuthHook
-	postAuthPersistHook     coreauth.PostAuthHook
-	pluginHost              *pluginhost.Host
-	configReloadHook        func(context.Context, *config.Config)
-	pluginStoreRegistryURL  string
-	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginReleaseCacheMu    sync.Mutex
-	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	cfg                       *config.Config
+	configFilePath            string
+	mu                        sync.Mutex
+	reloadMu                  sync.Mutex
+	reloadGeneration          uint64
+	appliedReloadGeneration   uint64
+	attemptsMu                sync.Mutex
+	failedAttempts            map[string]*attemptInfo // keyed by client IP
+	authManager               *coreauth.Manager
+	tokenStore                coreauth.Store
+	localPassword             string
+	allowRemoteOverride       bool
+	envSecret                 string
+	logDir                    string
+	postAuthHook              coreauth.PostAuthHook
+	postAuthPersistHook       coreauth.PostAuthHook
+	pluginHost                *pluginhost.Host
+	configReloadHook          func(context.Context, *config.Config)
+	pluginStoreRegistryURL    string
+	pluginStoreHTTPClient     pluginstore.HTTPDoer
+	pluginReleaseCacheMu      sync.Mutex
+	pluginReleaseCache        map[string]pluginReleaseCacheEntry
+	claudeImportSaveMu        sync.Mutex
+	claudeSessionOAuthFactory func(*config.Config, string) claudeSessionOAuthService
 }
 
 type configReloadSnapshot struct {
 	cfg        *config.Config
 	generation uint64
+}
+
+// managementConfigContextKey carries a request-stable configuration snapshot
+// through management persistence helpers. It keeps long-running operations
+// insulated from concurrent hot-reload pointer replacement.
+type managementConfigContextKey struct{}
+
+// managementAuthManagerContextKey carries the manager selected at request start.
+// A request should observe one manager even if hot reload swaps the handler's
+// runtime manager while the request is still persisting credentials.
+type managementAuthManagerContextKey struct{}
+
+type managementAuthManagerSnapshot struct {
+	manager *coreauth.Manager
+}
+
+func withManagementConfigSnapshot(ctx context.Context, cfg *config.Config) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, managementConfigContextKey{}, cfg)
+}
+
+func managementConfigSnapshotValue(ctx context.Context) (*config.Config, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	cfg, ok := ctx.Value(managementConfigContextKey{}).(*config.Config)
+	return cfg, ok
+}
+
+func withManagementAuthManagerSnapshot(ctx context.Context, manager *coreauth.Manager) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, managementAuthManagerContextKey{}, managementAuthManagerSnapshot{manager: manager})
+}
+
+func managementAuthManagerSnapshotFromContext(ctx context.Context) (*coreauth.Manager, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	snapshot, ok := ctx.Value(managementAuthManagerContextKey{}).(managementAuthManagerSnapshot)
+	return snapshot.manager, ok
+}
+
+// configSnapshot returns a stable shallow copy of the current management config.
+func (h *Handler) configSnapshot() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	snapshot := *h.cfg
+	return &snapshot
+}
+
+// authManagerSnapshot returns the current manager pointer without holding the
+// handler lock while callers inspect the manager. Manager itself is internally
+// synchronized, while the handler pointer is replaced during hot reload.
+func (h *Handler) authManagerSnapshot() *coreauth.Manager {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	return manager
+}
+
+// tokenStoreSnapshot returns the current persistence backend without changing
+// its request-independent configuration. Callers that need a directory-bound
+// file store should use a fresh store for listing instead of mutating the
+// shared backend.
+func (h *Handler) tokenStoreSnapshot() coreauth.Store {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	store := h.tokenStore
+	if store == nil {
+		store = sdkAuth.GetTokenStore()
+		h.tokenStore = store
+	}
+	return store
 }
 
 // NewHandler creates a new management handler instance.
@@ -73,11 +165,14 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg,
-		configFilePath:      configFilePath,
-		failedAttempts:      make(map[string]*attemptInfo),
-		authManager:         manager,
-		tokenStore:          sdkAuth.GetTokenStore(),
+		cfg:            cfg,
+		configFilePath: configFilePath,
+		failedAttempts: make(map[string]*attemptInfo),
+		authManager:    manager,
+		tokenStore:     sdkAuth.GetTokenStore(),
+		claudeSessionOAuthFactory: func(cfg *config.Config, proxyURL string) claudeSessionOAuthService {
+			return claude.NewClaudeAuthWithProxyURL(cfg, proxyURL)
+		},
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}

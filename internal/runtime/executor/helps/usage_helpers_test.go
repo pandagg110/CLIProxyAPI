@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -372,6 +373,35 @@ func TestParseClaudeStreamUsagePreservesThinkingTokensAsReasoningSubset(t *testi
 	}
 }
 
+func TestStreamUsageBufferObserveClaudeStreamMergesIndependentBuckets(t *testing.T) {
+	var buffer StreamUsageBuffer
+	buffer.ObserveClaudeStream([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":831,"cache_read_input_tokens":44225,"output_tokens":0}}}`))
+	buffer.ObserveClaudeStream([]byte(`data: {"type":"message_delta","usage":{"output_tokens":244,"output_tokens_details":{"thinking_tokens":40}}}`))
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("Detail() ok = false, want true")
+	}
+	if detail.InputTokens != 2 || detail.CacheCreationTokens != 831 || detail.CacheReadTokens != 44225 || detail.OutputTokens != 244 || detail.ReasoningTokens != 40 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if detail.CachedTokens != 44225 || detail.TotalTokens != 45302 {
+		t.Fatalf("cached/total = %d/%d, want 44225/45302", detail.CachedTokens, detail.TotalTokens)
+	}
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Input.CacheWriteTokens != 831 || detail.TokenBreakdown.Output.ReasoningTokens != 40 {
+		t.Fatalf("breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestStreamUsageBufferObserveClaudeStreamPreservesExplicitZero(t *testing.T) {
+	var buffer StreamUsageBuffer
+	buffer.ObserveClaudeStream([]byte(`data: {"usage":{"input_tokens":2,"output_tokens":5}}`))
+	buffer.ObserveClaudeStream([]byte(`data: {"usage":{"output_tokens":0}}`))
+	detail, ok := buffer.Detail()
+	if !ok || detail.OutputTokens != 0 {
+		t.Fatalf("detail = %+v ok=%v, want explicit zero output", detail, ok)
+	}
+}
+
 func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3,"output_tokens":10,"thinking_tokens":4}}`)
 	detail := ParseClaudeUsage(data)
@@ -599,6 +629,39 @@ func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	}
 	if record.Alias != "client-gpt" {
 		t.Fatalf("alias = %q, want %q", record.Alias, "client-gpt")
+	}
+}
+
+func TestResolveUsageSourceUsesNonSecretAuthIdentityBeforeAPIKey(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		ID:       "auth-id",
+		Index:    "auth-index",
+		Provider: "claude",
+		Label:    "team claude",
+		Metadata: map[string]any{"account_uuid": " account-uuid "},
+		Attributes: map[string]string{
+			"api_key": "upstream-secret",
+		},
+	}
+	auth.Metadata["email"] = "user@example.com"
+	reporter := NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
+	if got := reporter.buildRecord(usage.Detail{}, false).Source; got != "user@example.com" {
+		t.Fatalf("source = %q, want email", got)
+	}
+	delete(auth.Metadata, "email")
+	reporter = NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
+	record := reporter.buildRecord(usage.Detail{}, false)
+	if record.Source != "account-uuid" {
+		t.Fatalf("source = %q, want account-uuid", record.Source)
+	}
+	if record.AuthID != "auth-id" || record.AuthIndex != "auth-index" || record.AuthType == "" {
+		t.Fatalf("identity = auth_id:%q auth_index:%q auth_type:%q", record.AuthID, record.AuthIndex, record.AuthType)
+	}
+
+	delete(auth.Metadata, "account_uuid")
+	reporter = NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
+	if got := reporter.buildRecord(usage.Detail{}, false).Source; got != "team claude" {
+		t.Fatalf("source = %q, want auth label", got)
 	}
 }
 

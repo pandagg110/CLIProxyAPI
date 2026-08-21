@@ -35,7 +35,16 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	cchSigning := claudeCCHSigningEnabled(apiKey, claudeCCHUpstreamAnthropic, fp.ProfileClaudeCodeCLI, url)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
-	defer reporter.TrackFailure(ctx, &err)
+	var usageBuffer helps.StreamUsageBuffer
+	defer func() {
+		if err != nil {
+			usageBuffer.PublishFailure(ctx, reporter, err)
+			return
+		}
+		if !usageBuffer.Publish(ctx, reporter) {
+			reporter.EnsurePublished(ctx)
+		}
+	}()
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("claude")
@@ -281,6 +290,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}()
 	data, err := io.ReadAll(decodedBody)
+	var streamLines [][]byte
+	if upstreamStream {
+		streamLines = bytes.Split(data, []byte("\n"))
+		for _, line := range streamLines {
+			usageBuffer.ObserveClaudeStream(line)
+		}
+	}
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, err)
@@ -292,23 +308,19 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errValidate)
 		}
 		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromSSE(data))
-		lines := bytes.Split(data, []byte("\n"))
-		for i, line := range lines {
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+		for i, line := range streamLines {
 			restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
 			if errRestore != nil {
 				errRestore = fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore)
 				helps.RecordAPIResponseError(ctx, e.cfg, errRestore)
 				return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errRestore)
 			}
-			lines[i] = restoredLine
+			streamLines[i] = restoredLine
 		}
-		data = bytes.Join(lines, []byte("\n"))
+		data = bytes.Join(streamLines, []byte("\n"))
 	} else {
 		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromResponse(data))
-		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
+		usageBuffer.Observe(helps.ParseClaudeUsage(data), true)
 		var errRestore error
 		data, errRestore = restoreClaudeOAuthToolNamesFromResponse(data, oauthToolNamesReverseMap)
 		if errRestore != nil {

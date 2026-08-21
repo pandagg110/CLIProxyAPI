@@ -85,6 +85,17 @@ func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 	}
 }
 
+func TestShouldLogRequestSkipsClaudeSessionManagementEndpoints(t *testing.T) {
+	for _, path := range []string{
+		"/v0/management/claude/session-import",
+		"/v0/management/claude/accounts",
+	} {
+		if shouldLogRequest(path) {
+			t.Fatalf("shouldLogRequest(%q) = true, want false", path)
+		}
+	}
+}
+
 func TestRequestAPIKey(t *testing.T) {
 	tests := []struct {
 		name   string

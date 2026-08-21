@@ -426,15 +426,23 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 				}
 			}
 		}
-		if _, value := auth.AccountInfo(); value != "" {
-			return strings.TrimSpace(value)
-		}
 		if auth.Metadata != nil {
 			if email, ok := auth.Metadata["email"].(string); ok {
 				if trimmed := strings.TrimSpace(email); trimmed != "" {
 					return trimmed
 				}
 			}
+			if accountUUID, ok := auth.Metadata["account_uuid"].(string); ok {
+				if trimmed := strings.TrimSpace(accountUUID); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+		if label := strings.TrimSpace(auth.Label); label != "" {
+			return label
+		}
+		if _, value := auth.AccountInfo(); value != "" {
+			return strings.TrimSpace(value)
 		}
 		if auth.Attributes != nil {
 			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
@@ -518,6 +526,79 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 		detail.ResponseServiceTier = extractResponseServiceTierFromValidJSON(payload)
 	}
 	b.Observe(detail, usageOK || detail.ResponseServiceTier != "")
+}
+
+// ObserveClaudeStream merges the independent usage buckets Anthropic reports
+// across message_start and message_delta events. Fields are updated only when
+// they are present so a final event cannot erase the prompt/cache accounting
+// reported at stream start; an explicitly reported zero still replaces the
+// prior value.
+func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+	if b == nil {
+		return
+	}
+	payload := jsonPayload(line)
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return
+	}
+	root := gjson.ParseBytes(payload)
+	b.observeClaudeUsageNode(root.Get("message.usage"))
+	b.observeClaudeUsageNode(root.Get("usage"))
+}
+
+func (b *StreamUsageBuffer) observeClaudeUsageNode(usageNode gjson.Result) {
+	if !usageNode.Exists() || !usageNode.IsObject() {
+		return
+	}
+	observed := false
+	set := func(path string, target *int64) {
+		node := usageNode.Get(path)
+		if !node.Exists() {
+			return
+		}
+		*target = node.Int()
+		observed = true
+	}
+	set("input_tokens", &b.detail.InputTokens)
+	set("cache_read_input_tokens", &b.detail.CacheReadTokens)
+	set("cache_creation_input_tokens", &b.detail.CacheCreationTokens)
+	set("output_tokens", &b.detail.OutputTokens)
+	reasoningNode := firstExistingUsageNode(
+		usageNode,
+		"output_tokens_details.thinking_tokens",
+		"output_tokens_details.reasoning_tokens",
+		"thinking_tokens",
+	)
+	if reasoningNode.Exists() {
+		b.detail.ReasoningTokens = reasoningNode.Int()
+		observed = true
+	}
+	if !observed {
+		return
+	}
+	if b.detail.ReasoningTokens < 0 {
+		b.detail.ReasoningTokens = 0
+	}
+	b.detail.CachedTokens = b.detail.CacheReadTokens
+	if b.detail.CachedTokens == 0 {
+		b.detail.CachedTokens = b.detail.CacheCreationTokens
+	}
+	nonReasoningOutput := b.detail.OutputTokens
+	if b.detail.ReasoningTokens > 0 && b.detail.ReasoningTokens <= b.detail.OutputTokens {
+		nonReasoningOutput -= b.detail.ReasoningTokens
+	} else if b.detail.ReasoningTokens > b.detail.OutputTokens {
+		nonReasoningOutput = 0
+	}
+	b.detail.TotalTokens = b.detail.InputTokens + b.detail.OutputTokens + b.detail.CacheReadTokens + b.detail.CacheCreationTokens
+	b.detail.TokenBreakdown = usage.NewIndependentTokenBreakdown(
+		b.detail.InputTokens,
+		b.detail.CacheReadTokens,
+		b.detail.CacheCreationTokens,
+		nonReasoningOutput,
+		b.detail.ReasoningTokens,
+		b.detail.TotalTokens,
+	)
+	b.ok = true
 }
 
 // Publish emits the latest observed usage detail, if any.

@@ -225,6 +225,45 @@ func TestExchangeCodeForTokensUsesNative220ControlPlaneShape(t *testing.T) {
 	}
 }
 
+func TestExchangeCodeForTokensWithRedirectUsesPlatformCallback(t *testing.T) {
+	var tokenBody []byte
+	auth := &ClaudeAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.String() {
+				case TokenURL:
+					var errRead error
+					tokenBody, errRead = io.ReadAll(req.Body)
+					if errRead != nil {
+						t.Fatalf("read token request body: %v", errRead)
+					}
+					return jsonResponse(req, `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`), nil
+				case ProfileURL:
+					return jsonResponse(req, `{
+						"account":{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","email":"user@example.com"},
+						"organization":{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","name":"Example Org"}
+					}`), nil
+				case RolesURL:
+					return jsonResponse(req, `{"roles":[]}`), nil
+				default:
+					t.Fatalf("unexpected OAuth request URL %s", req.URL)
+					return nil, nil
+				}
+			}),
+		},
+	}
+
+	_, errExchange := auth.exchangeCodeForTokens(t.Context(), "auth-code", "state-value", &PKCECodes{CodeVerifier: "verifier"}, PlatformRedirectURI)
+	if errExchange != nil {
+		t.Fatalf("exchangeCodeForTokens() error = %v", errExchange)
+	}
+
+	wantBody := `{"grant_type":"authorization_code","code":"auth-code","redirect_uri":"` + PlatformRedirectURI + `","client_id":"` + ClientID + `","code_verifier":"verifier","state":"state-value"}`
+	if got := string(tokenBody); got != wantBody {
+		t.Fatalf("exchange body = %q, want %q", got, wantBody)
+	}
+}
+
 func TestExchangeCodeForTokensSurvivesCompanionLookupFailure(t *testing.T) {
 	auth := &ClaudeAuth{
 		httpClient: &http.Client{

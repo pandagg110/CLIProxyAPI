@@ -35,6 +35,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			Model:               "gpt-5.4",
 			Alias:               "client-gpt",
 			APIKey:              "test-key",
+			AuthID:              " auth-123 ",
 			AuthIndex:           "0",
 			AccessTokenSHA256:   "token-version-hash",
 			AuthType:            "apikey",
@@ -46,9 +47,12 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:             1500 * time.Millisecond,
 			Detail: coreusage.Detail{
-				InputTokens:  10,
-				OutputTokens: 20,
-				TotalTokens:  30,
+				InputTokens:         10,
+				OutputTokens:        20,
+				CachedTokens:        4,
+				CacheReadTokens:     4,
+				CacheCreationTokens: 2,
+				TotalTokens:         30,
 			},
 			ResponseHeaders: responseHeaders.Clone(),
 		})
@@ -61,6 +65,9 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "alias", "client-gpt")
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "auth_type", "apikey")
+		requireStringField(t, payload, "source", "user@example.com")
+		requireStringField(t, payload, "auth_id", "auth-123")
+		requireStringField(t, payload, "auth_index", "0")
 		requireStringField(t, payload, "access_token_sha256", "token-version-hash")
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
@@ -74,6 +81,11 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireIntField(t, payload, "accounting_version", coreusage.TokenAccountingSchemaVersion)
 		requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityComplete, 30)
 		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
+		tokens := requireTokensPayload(t, payload)
+		requireIntField(t, tokens, "input_tokens", 10)
+		requireIntField(t, tokens, "output_tokens", 20)
+		requireIntField(t, tokens, "cache_read_tokens", 4)
+		requireIntField(t, tokens, "cache_creation_tokens", 2)
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireBoolField(t, payload, "failed", false)
@@ -151,6 +163,7 @@ func TestUsageQueuePluginPayloadDefaultsGenerateTrueWhenOmitted(t *testing.T) {
 
 		payload := popSinglePayload(t)
 		requireBoolField(t, payload, "generate", true)
+		requireMissingField(t, payload, "auth_id")
 	})
 }
 

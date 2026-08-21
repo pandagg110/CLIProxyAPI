@@ -270,6 +270,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
 	go func() {
 		defer close(out)
+		var usageBuffer helps.StreamUsageBuffer
+		defer reporter.EnsurePublished(ctx)
 		defer func() {
 			if errClose := decodedBody.Close(); errClose != nil {
 				log.Errorf("response body close error: %v", errClose)
@@ -278,10 +280,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		emitCancellation := func(cause error) bool {
 			cancelErr := newClaudeOAuthCancellationError(ctx, fp.OAuthCancellation, cause)
 			if cancelErr == nil {
+				if cause != nil {
+					usageBuffer.PublishFailure(ctx, reporter, cause)
+				}
 				return false
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, cancelErr)
-			reporter.PublishFailure(ctx, cancelErr)
+			usageBuffer.PublishFailure(ctx, reporter, cancelErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: cancelErr}:
 			default:
@@ -291,7 +296,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		emitResponseError := func(errResponse error) {
 			errResponse = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errResponse)
 			helps.RecordAPIResponseError(ctx, e.cfg, errResponse)
-			reporter.PublishFailure(ctx, errResponse)
+			usageBuffer.PublishFailure(ctx, reporter, errResponse)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errResponse}:
 			case <-ctx.Done():
@@ -322,9 +327,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				line := scanner.Bytes()
 				observeClaudeStreamLine(line, &upstreamMessageID, &upstreamCompleted)
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-					reporter.Publish(ctx, detail)
-				}
+				usageBuffer.ObserveClaudeStream(line)
 				restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
 				if errRestore != nil {
 					emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
@@ -348,7 +351,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if errScan := scanner.Err(); errScan != nil {
 				errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.PublishFailure(ctx, errScan)
+				usageBuffer.PublishFailure(ctx, reporter, errScan)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 				case <-ctx.Done():
@@ -358,6 +361,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if upstreamCompleted {
 				commitClaudeDiagnostics(diagnosticsState, upstreamMessageID)
 			}
+			usageBuffer.Publish(ctx, reporter)
 			return
 		}
 
@@ -371,9 +375,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			line := scanner.Bytes()
 			observeClaudeStreamLine(line, &upstreamMessageID, &upstreamCompleted)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			usageBuffer.ObserveClaudeStream(line)
 			restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
 			if errRestore != nil {
 				emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
@@ -410,7 +412,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if errScan := scanner.Err(); errScan != nil {
 			errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			usageBuffer.PublishFailure(ctx, reporter, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -420,6 +422,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if upstreamCompleted {
 			commitClaudeDiagnostics(diagnosticsState, upstreamMessageID)
 		}
+		usageBuffer.Publish(ctx, reporter)
 	}()
 	result := &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}
 	if replayScope.valid() {

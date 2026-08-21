@@ -1329,6 +1329,55 @@ func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionManagementRoutesRequireManagementKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/v0/management/claude/session-import"},
+		{method: http.MethodGet, path: "/v0/management/claude/accounts"},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, test.path, nil)
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestClaudeSessionManagementRoutesAreRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	tests := []struct {
+		method     string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{method: http.MethodPost, path: "/v0/management/claude/session-import", body: `{}`, wantStatus: http.StatusBadRequest},
+		{method: http.MethodGet, path: "/v0/management/claude/accounts", wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			req.Header.Set("Authorization", "Bearer test-management-key")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, test.wantStatus, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestNewServerWithPluginHostInjectsHandlerInterceptors(t *testing.T) {
 	host := pluginhost.New()
 	server := newTestServerWithOptions(t, WithPluginHost(host))

@@ -29,10 +29,11 @@ const (
 	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
-	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
-	ClientID         = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	RedirectURI      = "http://localhost:54545/callback"
-	ClaudeOAuthScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+	RolesURL            = "https://api.anthropic.com/api/oauth/claude_cli/roles"
+	ClientID            = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	RedirectURI         = "http://localhost:54545/callback"
+	PlatformRedirectURI = "https://platform.claude.com/oauth/code/callback"
+	ClaudeOAuthScope    = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
 	claudeRefreshMinBackoff       = 5 * time.Second
 	claudeRefreshMaxBackoff       = 5 * time.Minute
@@ -242,9 +243,12 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	if errDo != nil {
 		return nil, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("fetch Claude OAuth %s: response body is nil", label)
+	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("failed to close Claude OAuth %s response body: %v", label, errClose)
+			log.Errorf("failed to close Claude OAuth %s response body", endpoint)
 		}
 	}()
 	body, errRead := readClaudeOAuthResponseBody(resp)
@@ -368,6 +372,13 @@ func (c *ClaudeAuth) parseCodeAndState(code string) (parsedCode, parsedState str
 //   - *ClaudeAuthBundle: The complete authentication bundle with tokens
 //   - error: An error if token exchange fails
 func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes) (*ClaudeAuthBundle, error) {
+	return o.exchangeCodeForTokens(ctx, code, state, pkceCodes, RedirectURI)
+}
+
+func (o *ClaudeAuth) exchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string) (*ClaudeAuthBundle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
 	}
@@ -379,7 +390,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	reqBody := authorizationCodeExchangeRequest{
 		GrantType:    "authorization_code",
 		Code:         newCode,
-		RedirectURI:  RedirectURI,
+		RedirectURI:  redirectURI,
 		ClientID:     ClientID,
 		CodeVerifier: pkceCodes.CodeVerifier,
 		State:        state,
@@ -407,9 +418,12 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("token exchange response body is nil")
+	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("failed to close response body: %v", errClose)
+			log.Error("failed to close Claude OAuth token exchange response body")
 		}
 	}()
 
@@ -427,6 +441,9 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	var tokenResp tokenResponse
 	if err = json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+	if strings.TrimSpace(tokenResp.AccessToken) == "" || strings.TrimSpace(tokenResp.RefreshToken) == "" {
+		return nil, fmt.Errorf("token response is missing access or refresh token")
 	}
 
 	deviceIDs, errDeviceIDs := GenerateDeviceIDPool()

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -679,46 +680,108 @@ func (h *Handler) deleteTokenRecord(ctx context.Context, path string) error {
 }
 
 func (h *Handler) tokenStoreWithBaseDir() coreauth.Store {
+	return h.tokenStoreWithConfig(nil)
+}
+
+func (h *Handler) tokenStoreWithContext(ctx context.Context) coreauth.Store {
+	cfg, present := managementConfigSnapshotValue(ctx)
+	if !present {
+		return h.tokenStoreWithBaseDir()
+	}
+	if cfg == nil {
+		return nil
+	}
+	store := h.tokenStoreSnapshot()
+	if _, ok := store.(*sdkAuth.FileTokenStore); !ok {
+		return store
+	}
+	requestStore := sdkAuth.NewFileTokenStore()
+	requestStore.SetBaseDir(cfg.AuthDir)
+	return requestStore
+}
+
+// tokenStoreForInventory returns a request-scoped file store for directory
+// listings. FileTokenStore keeps its base directory on the store instance, so
+// using a fresh instance prevents a concurrent config reload from switching
+// the directory between selecting and listing the store. Other backends are
+// already request-independent and can be shared.
+func (h *Handler) tokenStoreForInventory(ctx context.Context) coreauth.Store {
 	if h == nil {
 		return nil
 	}
+	store := h.tokenStoreSnapshot()
+	cfg, present := managementConfigSnapshotValue(ctx)
+	if !present {
+		cfg = h.configSnapshot()
+	}
+	if present && cfg == nil {
+		cfg = &config.Config{}
+	}
+	if _, ok := store.(*sdkAuth.FileTokenStore); ok && cfg != nil {
+		listingStore := sdkAuth.NewFileTokenStore()
+		listingStore.SetBaseDir(cfg.AuthDir)
+		return listingStore
+	}
+	return store
+}
+
+func (h *Handler) tokenStoreWithConfig(cfg *config.Config) coreauth.Store {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
 	store := h.tokenStore
 	if store == nil {
 		store = sdkAuth.GetTokenStore()
 		h.tokenStore = store
 	}
-	if h.cfg != nil {
+	if cfg == nil {
+		cfg = h.cfg
+	}
+	h.mu.Unlock()
+	if cfg != nil {
 		if dirSetter, ok := store.(interface{ SetBaseDir(string) }); ok {
-			dirSetter.SetBaseDir(h.cfg.AuthDir)
+			dirSetter.SetBaseDir(cfg.AuthDir)
 		}
 	}
 	return store
 }
 
 func (h *Handler) mergeExistingAuthFileMetadata(record *coreauth.Auth) {
+	h.mergeExistingAuthFileMetadataWithConfig(record, nil)
+}
+
+func (h *Handler) mergeExistingAuthFileMetadataWithConfig(record *coreauth.Auth, cfg *config.Config) {
+	h.mergeExistingAuthFileMetadataWithConfigAndManager(record, cfg, h.authManagerSnapshot())
+}
+
+func (h *Handler) mergeExistingAuthFileMetadataWithConfigAndManager(record *coreauth.Auth, cfg *config.Config, manager *coreauth.Manager) {
 	if h == nil || record == nil {
 		return
 	}
 	var existingMap map[string]any
 
-	if h.cfg != nil && strings.TrimSpace(h.cfg.AuthDir) != "" {
+	if cfg == nil {
+		cfg = h.configSnapshot()
+	}
+	if cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
 		targetFile := record.FileName
 		if targetFile == "" {
 			targetFile = record.ID
 		}
 		if targetFile != "" {
-			fullPath := filepath.Join(h.cfg.AuthDir, targetFile)
+			fullPath := filepath.Join(cfg.AuthDir, targetFile)
 			if raw, errRead := os.ReadFile(fullPath); errRead == nil && len(raw) > 0 {
 				_ = json.Unmarshal(raw, &existingMap)
 			}
 		}
 	}
 
-	if existingMap == nil && h.authManager != nil {
-		if existing, ok := h.authManager.GetByID(record.ID); ok && existing != nil && existing.Metadata != nil {
+	if existingMap == nil && manager != nil {
+		if existing, ok := manager.GetByID(record.ID); ok && existing != nil && existing.Metadata != nil {
 			existingMap = existing.Metadata
 		} else {
-			for _, auth := range h.authManager.List() {
+			for _, auth := range manager.List() {
 				if auth != nil && auth.FileName == record.FileName && auth.Metadata != nil {
 					existingMap = auth.Metadata
 					break
@@ -736,8 +799,20 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if record == nil {
 		return "", fmt.Errorf("token record is nil")
 	}
-	h.mergeExistingAuthFileMetadata(record)
-	store := h.tokenStoreWithBaseDir()
+	configOverride, configSnapshotted := managementConfigSnapshotValue(ctx)
+	if configSnapshotted && configOverride == nil {
+		configOverride = &config.Config{}
+	}
+	manager, managerSnapshotted := managementAuthManagerSnapshotFromContext(ctx)
+	if !managerSnapshotted {
+		manager = h.authManagerSnapshot()
+	}
+	h.mergeExistingAuthFileMetadataWithConfigAndManager(record, configOverride, manager)
+	stripClaudeOAuthSessionSecrets(record)
+	if claudeOAuthStorageContainsSessionKey(record) {
+		return "", fmt.Errorf("Claude OAuth storage contains session material")
+	}
+	store := h.tokenStoreWithContext(ctx)
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
@@ -745,6 +820,10 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
+	}
+	stripClaudeOAuthSessionSecrets(record)
+	if claudeOAuthStorageContainsSessionKey(record) {
+		return "", fmt.Errorf("Claude OAuth storage contains session material")
 	}
 	savedPath, errSave := store.Save(ctx, record)
 	if errSave != nil {

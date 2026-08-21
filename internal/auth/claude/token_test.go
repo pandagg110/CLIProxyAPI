@@ -57,3 +57,27 @@ func TestSaveTokenToFile_PreservesCustomMetadata(t *testing.T) {
 		t.Errorf("weight = %v, want 5", saved["weight"])
 	}
 }
+
+func TestSaveTokenToFileUsesPrivatePermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	authFilePath := filepath.Join(tempDir, "claude-private.json")
+	if errWrite := os.WriteFile(authFilePath, []byte("{}"), 0o644); errWrite != nil {
+		t.Fatalf("seed token file: %v", errWrite)
+	}
+	if errChmod := os.Chmod(authFilePath, 0o644); errChmod != nil {
+		t.Fatalf("set permissive token mode: %v", errChmod)
+	}
+
+	storage := &ClaudeTokenStorage{AccessToken: "access", RefreshToken: "refresh"}
+	if errSave := storage.SaveTokenToFile(authFilePath); errSave != nil {
+		t.Fatalf("SaveTokenToFile() error = %v", errSave)
+	}
+
+	info, errStat := os.Stat(authFilePath)
+	if errStat != nil {
+		t.Fatalf("stat token file: %v", errStat)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("token file permissions = %o, want 600", got)
+	}
+}
