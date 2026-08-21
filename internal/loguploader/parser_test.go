@@ -148,6 +148,70 @@ func TestInspectSourceLogTimestampAndModelFallbacks(t *testing.T) {
 	}
 }
 
+func TestInspectSourceLogPrefersRecordedProvider(t *testing.T) {
+	t.Parallel()
+
+	location := mustLocation(t, "Asia/Shanghai")
+	root := filepath.Join(t.TempDir(), "keys")
+	contents := "URL: /v1/messages\n" +
+		"=== API REQUEST 1 ===\n" +
+		"Auth: provider=claude auth_id=upstream-1\n" +
+		"Body:\n" +
+		`{"model":"gpt-4o"}` + "\n"
+	path := mustWriteLog(t, root, "alice", "claude-dd.log", contents, time.Date(2026, time.July, 16, 8, 9, 10, 0, location))
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		t.Fatalf("stat source: %v", errStat)
+	}
+	source, errInspect := inspectSourceLog(root, path, info, location)
+	if errInspect != nil {
+		t.Fatalf("inspect source: %v", errInspect)
+	}
+	if source.Model != "gpt-4o" {
+		t.Fatalf("model = %q, want gpt-4o", source.Model)
+	}
+	if source.Provider != providerClaude {
+		t.Fatalf("provider = %q, want %q", source.Provider, providerClaude)
+	}
+}
+
+func TestClassifyProviderFromLogFallbacks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		prefix   string
+		model    string
+		provider string
+	}{
+		{
+			name:     "explicit provider wins over encoded model",
+			prefix:   "Auth: provider=claude\n",
+			model:    "claude-fable-5-dd-o4-tpg",
+			provider: providerClaude,
+		},
+		{
+			name:     "messages route identifies Claude",
+			prefix:   "URL: https://example.test/v1/messages\n",
+			model:    "unknown",
+			provider: providerClaude,
+		},
+		{
+			name:     "model remains the final fallback",
+			prefix:   "",
+			model:    "claude-opus-4",
+			provider: providerClaude,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyProviderFromLog([]byte(test.prefix), test.model); got != test.provider {
+				t.Fatalf("classifyProviderFromLog() = %q, want %q", got, test.provider)
+			}
+		})
+	}
+}
+
 func TestArchiveFilenameAndHumanSize(t *testing.T) {
 	t.Parallel()
 

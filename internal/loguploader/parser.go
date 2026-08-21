@@ -92,18 +92,79 @@ func inspectSourceLog(root, path string, info os.FileInfo, location *time.Locati
 	if match := modelPattern.FindSubmatch(prefix); len(match) == 2 {
 		model = string(match[1])
 	}
+	provider := classifyProviderFromLog(prefix, model)
 	return sourceLog{
 		Path:        path,
 		Relative:    filepath.ToSlash(relative),
 		KeyName:     parts[0],
 		Model:       model,
-		Provider:    classifyProvider(model),
+		Provider:    provider,
 		Timestamp:   timestamp,
 		ArchiveHour: archiveHour,
 		Size:        info.Size(),
 		ModTime:     info.ModTime(),
 		Fingerprint: fmt.Sprintf("%s|%d|%d", filepath.ToSlash(relative), info.Size(), info.ModTime().UnixNano()),
 	}, nil
+}
+
+// classifyProviderFromLog prefers the provider recorded by the executor over
+// inferring it from the model name. Claude's DD model IDs can encode an
+// arbitrary underlying model, so model-only classification can send a Claude
+// response through the Codex normalizer and filter it as an empty record.
+func classifyProviderFromLog(prefix []byte, model string) string {
+	if provider := providerFromAPIRequestAuth(prefix); provider != "" {
+		return provider
+	}
+	if provider := providerFromRequestURL(prefix); provider != "" {
+		return provider
+	}
+	return classifyProvider(model)
+}
+
+func providerFromAPIRequestAuth(prefix []byte) string {
+	for _, rawLine := range strings.Split(string(prefix), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "Auth:") {
+			continue
+		}
+		for _, field := range strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, "Auth:"))) {
+			if !strings.HasPrefix(field, "provider=") {
+				continue
+			}
+			return normalizeLoggedProvider(strings.TrimPrefix(field, "provider="))
+		}
+	}
+	return ""
+}
+
+func providerFromRequestURL(prefix []byte) string {
+	for _, rawLine := range strings.Split(string(prefix), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "URL:") {
+			continue
+		}
+		urlValue := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "URL:")))
+		if strings.Contains(urlValue, "/messages") {
+			return providerClaude
+		}
+		if strings.Contains(urlValue, "/responses") {
+			return providerCodex
+		}
+	}
+	return ""
+}
+
+func normalizeLoggedProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case providerCodex, "openai":
+		return providerCodex
+	case providerClaude, "claude", "anthropic":
+		return providerClaude
+	case providerGrok, "xai":
+		return providerGrok
+	default:
+		return ""
+	}
 }
 
 func extractTimestamp(prefix []byte, filename string, location *time.Location, fallback time.Time) time.Time {
