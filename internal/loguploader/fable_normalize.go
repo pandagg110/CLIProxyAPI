@@ -3,6 +3,7 @@ package loguploader
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -55,6 +56,28 @@ type fableResponseBlock struct {
 	PartialJSON strings.Builder
 }
 
+// fableSourceFormatError marks deterministic source-log format failures. These
+// errors cannot be fixed by retrying the same file and must be quarantined so
+// they do not block the rest of the hourly batch.
+type fableSourceFormatError struct {
+	err error
+}
+
+func (e *fableSourceFormatError) Error() string { return e.err.Error() }
+
+func (e *fableSourceFormatError) Unwrap() error { return e.err }
+
+func newFableSourceFormatError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *fableSourceFormatError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &fableSourceFormatError{err: err}
+}
+
 // normalizeFableRecord parses a Claude Messages API log into the customer
 // six-field record. It returns a nil record when no assistant response was
 // captured, allowing the archive builder to filter incomplete requests.
@@ -81,7 +104,7 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 
 	requestBody, errRequest := decodeFableObject(firstFableSection(text, "REQUEST BODY"))
 	if errRequest != nil {
-		return nil, hash, fmt.Errorf("decode fable request body %s: %w", source.Relative, errRequest)
+		return nil, hash, newFableSourceFormatError(fmt.Errorf("decode fable request body %s: %w", source.Relative, errRequest))
 	}
 
 	sessionID := fableSessionID(text, requestBody)
@@ -98,16 +121,16 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 	system := fableJSONArray(requestBody["system"])
 	tools := fableJSONArray(requestBody["tools"])
 	if _, hasMessages := requestBody["messages"]; !hasMessages {
-		return nil, hash, fmt.Errorf("missing messages array")
+		return nil, hash, newFableSourceFormatError(fmt.Errorf("missing messages array"))
 	}
 	messages, errMessages := fableRequestMessages(requestBody["messages"])
 	if errMessages != nil {
-		return nil, hash, fmt.Errorf("normalize fable messages %s: %w", source.Relative, errMessages)
+		return nil, hash, newFableSourceFormatError(fmt.Errorf("normalize fable messages %s: %w", source.Relative, errMessages))
 	}
 
 	response, ok, errResponse := parseFableResponse(responseSection)
 	if errResponse != nil {
-		return nil, hash, fmt.Errorf("parse fable response %s: %w", source.Relative, errResponse)
+		return nil, hash, newFableSourceFormatError(fmt.Errorf("parse fable response %s: %w", source.Relative, errResponse))
 	}
 	if !ok || len(response) == 0 {
 		return nil, hash, nil
@@ -556,12 +579,29 @@ type fableArchiveEntry struct {
 	Legacy bool
 }
 
+type fableInvalidSource struct {
+	Index int
+	Err   error
+}
+
 // prepareFableArchiveEntries converts every Fable request independently. A
 // session can contain multiple request logs, and each request normally produces
 // its own JSONL record even when the request body repeats the full message
 // history. Exact duplicate streaming snapshots are omitted.
 func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error) {
+	entries, invalid, errPrepare := prepareFableArchiveEntriesWithInvalid(sources)
+	if errPrepare != nil {
+		return nil, errPrepare
+	}
+	if len(invalid) > 0 {
+		return nil, invalid[0].Err
+	}
+	return entries, nil
+}
+
+func prepareFableArchiveEntriesWithInvalid(sources []sourceLog) ([]fableArchiveEntry, []fableInvalidSource, error) {
 	entries := make([]fableArchiveEntry, 0, len(sources))
+	invalid := make([]fableInvalidSource, 0)
 	seenStreaming := make(map[string]struct{})
 	for index := range sources {
 		record, hash, errNormalize := normalizeFableRecord(sources[index])
@@ -572,7 +612,12 @@ func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error
 				entries = append(entries, fableArchiveEntry{Index: index, Legacy: true})
 				continue
 			}
-			return nil, errNormalize
+			var formatErr *fableSourceFormatError
+			if errors.As(errNormalize, &formatErr) {
+				invalid = append(invalid, fableInvalidSource{Index: index, Err: errNormalize})
+				continue
+			}
+			return nil, nil, errNormalize
 		}
 		sources[index].SHA256 = hash
 		sources[index].JSONLBytes = 0
@@ -597,7 +642,7 @@ func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error
 	sort.Slice(entries, func(i, j int) bool {
 		return sources[entries[i].Index].Relative < sources[entries[j].Index].Relative
 	})
-	return entries, nil
+	return entries, invalid, nil
 }
 
 func hashSourceFile(path string) string {

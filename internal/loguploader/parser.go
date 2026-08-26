@@ -52,6 +52,9 @@ type sourceLog struct {
 	Fingerprint string
 	SHA256      string
 	JSONLBytes  int64
+	// QuarantineReason is set for a deterministic source-format failure. It is
+	// runtime-only and keeps the invalid source out of the prepared batch.
+	QuarantineReason string
 }
 
 type jsonlRecordHeader struct {

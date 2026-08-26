@@ -247,6 +247,11 @@ func (s *Service) runCatchUp(ctx context.Context, dryRun bool, reason string) {
 			}
 			return
 		}
+		if dryRun {
+			// Dry-run must never spin on unchanged source files. It does not move
+			// or record source completion, so a catch-up loop would repeat forever.
+			return
+		}
 		hasWork, errHas := s.hasCatchUpWork()
 		if errHas != nil {
 			log.WithError(errHas).Warn("catch-up work check failed; waiting for next schedule")
@@ -535,14 +540,10 @@ func groupSources(sources []sourceLog) map[providerGroupKey][]sourceLog {
 	return groups
 }
 
-func (s *Service) processBatch(ctx context.Context, hour time.Time, provider string, sources []sourceLog, state *uploadState, dryRun bool) error {
-	record := auditRecord{
-		Timestamp:   s.now().In(s.location),
-		Provider:    provider,
-		Hour:        hour,
-		SourceCount: len(sources),
-		KeyNames:    make(map[string]auditKeyNameSummary),
-	}
+func summarizeAuditSources(record *auditRecord, sources []sourceLog) {
+	record.SourceCount = len(sources)
+	record.SourceBytes = 0
+	record.KeyNames = make(map[string]auditKeyNameSummary)
 	for _, source := range sources {
 		record.SourceBytes += source.Size
 		keySummary := record.KeyNames[source.KeyName]
@@ -557,6 +558,15 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, provider str
 		keySummary.Models[source.Model] = modelSummary
 		record.KeyNames[source.KeyName] = keySummary
 	}
+}
+
+func (s *Service) processBatch(ctx context.Context, hour time.Time, provider string, sources []sourceLog, state *uploadState, dryRun bool) error {
+	record := auditRecord{
+		Timestamp: s.now().In(s.location),
+		Provider:  provider,
+		Hour:      hour,
+	}
+	summarizeAuditSources(&record, sources)
 	if finalized, exists := state.Hours[hourStateKey(hour, provider)]; exists && !dryRun {
 		cause := fmt.Errorf("archive hour %s is already finalized as %s; retaining %d late source logs", hour.Format(time.RFC3339), finalized.ObjectKey, len(sources))
 		record.Status = "late_logs_retained"
@@ -577,6 +587,28 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, provider str
 	if errArchive != nil {
 		return s.recordBatchFailure(record, fmt.Errorf("build archive for hour %s: %w", hour.Format(time.RFC3339), errArchive))
 	}
+	activeSources := make([]sourceLog, 0, len(sources))
+	quarantinedCount := 0
+	for _, source := range sources {
+		if source.QuarantineReason != "" {
+			quarantinedCount++
+			continue
+		}
+		activeSources = append(activeSources, source)
+	}
+	sources = activeSources
+	if len(sources) == 0 && quarantinedCount > 0 {
+		if archivePath != "" {
+			if errRemove := os.Remove(archivePath); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+				return s.recordBatchFailure(record, fmt.Errorf("remove empty quarantined archive: %w", errRemove))
+			}
+		}
+		record.Status = "quarantined"
+		record.ArchivePath = ""
+		record.Error = fmt.Sprintf("quarantined %d invalid source log(s)", quarantinedCount)
+		return s.appendAudit(record)
+	}
+	summarizeAuditSources(&record, sources)
 	log.WithFields(log.Fields{
 		"hour":             hour.Format(time.RFC3339),
 		"source_files":     len(sources),
@@ -710,10 +742,24 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 	var errWrite error
 	var filteredCount int
 	if provider == providerClaude {
-		entries, errEntries := prepareFableArchiveEntries(sources)
+		entries, invalidSources, errEntries := prepareFableArchiveEntriesWithInvalid(sources)
 		if errEntries != nil {
 			errWrite = errEntries
 		} else {
+			for _, invalid := range invalidSources {
+				reason := invalid.Err
+				sources[invalid.Index].QuarantineReason = reason.Error()
+				if dryRun {
+					continue
+				}
+				if _, errQuarantine := s.quarantineSource(sources[invalid.Index], reason); errQuarantine != nil {
+					errWrite = errQuarantine
+					break
+				}
+			}
+			if errWrite != nil {
+				entries = nil
+			}
 			for _, entry := range entries {
 				if errContext := ctx.Err(); errContext != nil {
 					errWrite = errContext
