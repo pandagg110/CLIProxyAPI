@@ -82,7 +82,7 @@ Status: 200
 	if !ok {
 		t.Fatalf("structured metadata = %#v", decoded["metadata"])
 	}
-	for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source"} {
+	for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source", "tool_result"} {
 		if _, exists := metadata[field]; exists {
 			t.Fatalf("structured metadata contains removed field %q: %#v", field, metadata)
 		}
@@ -326,10 +326,10 @@ func TestBuildArchiveKeepsEachFableRequestRecord(t *testing.T) {
 			}
 		}
 		metadata, ok := record["metadata"].(map[string]any)
-		if !ok || metadata["session_id"] != "session-1" || metadata["model"] != "claude-fable-5" {
+		if !ok || metadata["session_id"] != "session-1" || metadata["conversation_id"] != "session-1" || metadata["model"] != "claude-fable-5" {
 			t.Fatalf("record %d metadata = %#v", index, record["metadata"])
 		}
-		for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source"} {
+		for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source", "tool_result"} {
 			if _, exists := metadata[field]; exists {
 				t.Fatalf("record %d metadata contains removed field %q: %#v", index, field, metadata)
 			}

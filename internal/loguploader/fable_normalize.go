@@ -216,16 +216,12 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 		fableSessionIDFromHeadersAndBody(record.headers, requestBody),
 		record.SessionID,
 	)
+	if strings.TrimSpace(fableStringValue(conversationID)) == "" {
+		conversationID = sessionID
+	}
 	timestamp := timestampToUTC(caseInsensitiveGet(record.requestInfo, "timestamp"))
 	if timestamp == nil || timestamp == "" {
 		timestamp = record.source.Timestamp.UTC().Format(time.RFC3339Nano)
-	}
-
-	toolResult := jsonValueOrEmptyArray(extractFableToolResults(record.responseContent))
-	if body, ok := record.responseEnvelope["body"].(map[string]any); ok {
-		if responseTools, exists := body["tools"]; exists {
-			toolResult = jsonValueOrEmptyArray(responseTools)
-		}
 	}
 
 	return &fableStructuredRecord{
@@ -248,7 +244,6 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 			"timestamp":                  fableStringValue(timestamp),
 			"model":                      firstPresent(mapGet(requestBody, "model"), record.source.Model),
 			"user_id":                    record.source.KeyName,
-			"tool_result":                toolResult,
 		},
 	}
 }
