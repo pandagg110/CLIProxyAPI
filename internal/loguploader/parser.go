@@ -188,9 +188,16 @@ func writeJSONLRecord(dst io.Writer, source sourceLog) (int64, error) {
 }
 
 func writeJSONLRecordWithHash(dst io.Writer, source sourceLog) (int64, string, error) {
-	if source.Provider == providerCodex {
+	switch source.Provider {
+	case providerCodex:
 		return writeCodexNormalizedRecord(dst, source)
+	case providerClaude:
+		return writeFableNormalizedRecord(dst, source)
 	}
+	return writeRawJSONLRecordWithHash(dst, source)
+}
+
+func writeRawJSONLRecordWithHash(dst io.Writer, source sourceLog) (int64, string, error) {
 	header := jsonlRecordHeader{
 		SchemaVersion:   1,
 		KeyName:         source.KeyName,

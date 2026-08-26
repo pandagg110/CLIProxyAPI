@@ -709,26 +709,63 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 	var jsonlSize int64
 	var errWrite error
 	var filteredCount int
-	for index := range sources {
-		if errContext := ctx.Err(); errContext != nil {
-			errWrite = errContext
-			break
+	if provider == providerClaude {
+		entries, errEntries := prepareFableArchiveEntries(sources)
+		if errEntries != nil {
+			errWrite = errEntries
+		} else {
+			for _, entry := range entries {
+				if errContext := ctx.Err(); errContext != nil {
+					errWrite = errContext
+					break
+				}
+				var written int64
+				var errRecord error
+				if entry.Legacy {
+					written, sources[entry.Index].SHA256, errRecord = writeRawJSONLRecordWithHash(encoder, sources[entry.Index])
+				} else {
+					written, _, errRecord = writeFableRecordValue(encoder, entry.Record, sources[entry.Index].SHA256)
+				}
+				if errRecord != nil {
+					errWrite = errRecord
+					break
+				}
+				nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
+				if errSize != nil {
+					errWrite = errSize
+					break
+				}
+				jsonlSize = nextJSONLSize
+				sources[entry.Index].JSONLBytes = written
+			}
 		}
-		written, sourceSHA256, errRecord := writeJSONLRecordWithHash(encoder, sources[index])
-		if errRecord != nil {
-			errWrite = errRecord
-			break
+		for _, source := range sources {
+			if source.JSONLBytes == 0 {
+				filteredCount++
+			}
 		}
-		nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
-		if errSize != nil {
-			errWrite = errSize
-			break
-		}
-		jsonlSize = nextJSONLSize
-		sources[index].SHA256 = sourceSHA256
-		sources[index].JSONLBytes = written
-		if written == 0 {
-			filteredCount++
+	} else {
+		for index := range sources {
+			if errContext := ctx.Err(); errContext != nil {
+				errWrite = errContext
+				break
+			}
+			written, sourceSHA256, errRecord := writeJSONLRecordWithHash(encoder, sources[index])
+			if errRecord != nil {
+				errWrite = errRecord
+				break
+			}
+			nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
+			if errSize != nil {
+				errWrite = errSize
+				break
+			}
+			jsonlSize = nextJSONLSize
+			sources[index].SHA256 = sourceSHA256
+			sources[index].JSONLBytes = written
+			if written == 0 {
+				filteredCount++
+			}
 		}
 	}
 	errEncoderClose := encoder.Close()
@@ -739,11 +776,15 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 		return "", 0, 0, fmt.Errorf("write Zstandard archive: %w", errCombined)
 	}
 	if filteredCount > 0 {
+		message := "records filtered during normalization (empty response outputs)"
+		if provider == providerClaude {
+			message = "Fable source records omitted or deduplicated during normalization"
+		}
 		log.WithFields(log.Fields{
 			"hour":             hour.Format(time.RFC3339),
 			"filtered_records": filteredCount,
 			"source_files":     len(sources),
-		}).Info("records filtered during normalization (empty response outputs)")
+		}).Info(message)
 	}
 
 	archiveFilename := makeArchiveFilename(hour, provider, jsonlSize)
