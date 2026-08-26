@@ -895,7 +895,7 @@ func fableResponseStatus(section string) int {
 
 func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 	blocks := make(map[int]*fableResponseBlock)
-	seenEvents := make(map[string]struct{})
+	previousEventKey := ""
 	var currentEvent strings.Builder
 	flush := func() error {
 		data := strings.TrimSpace(currentEvent.String())
@@ -908,13 +908,25 @@ func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 			return nil
 		}
 		// A few transports replay an identical SSE event while reconnecting.
-		// Ignore exact event replays so their deltas are not appended twice.
-		if encoded, errEncode := json.Marshal(event); errEncode == nil {
+		// Only adjacent replays are deduplicated. Input JSON delta payloads are
+		// ordered fragments, and identical fragments can legitimately repeat.
+		typeName, _ := event["type"].(string)
+		deltaType := ""
+		if typeName == "content_block_delta" {
+			if delta, ok := event["delta"].(map[string]any); ok {
+				deltaType, _ = delta["type"].(string)
+			}
+		}
+		if typeName == "content_block_delta" && deltaType == "input_json_delta" {
+			previousEventKey = ""
+		} else if encoded, errEncode := json.Marshal(event); errEncode == nil {
 			key := string(encoded)
-			if _, exists := seenEvents[key]; exists {
+			if key == previousEventKey {
 				return nil
 			}
-			seenEvents[key] = struct{}{}
+			previousEventKey = key
+		} else {
+			previousEventKey = ""
 		}
 		return applyFableSSEEvent(blocks, event)
 	}

@@ -233,6 +233,55 @@ func TestParseFableSSEDeduplicatesExactEventReplay(t *testing.T) {
 	}
 }
 
+func TestParseFableSSEPreservesRepeatedToolInputDelta(t *testing.T) {
+	sseData := func(event map[string]any) string {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "data: " + string(raw) + "\n\n"
+	}
+	delta := func(partial string) string {
+		return "event: content_block_delta\n" + sseData(map[string]any{
+			"type":  "content_block_delta",
+			"index": 3,
+			"delta": map[string]any{
+				"type":         "input_json_delta",
+				"partial_json": partial,
+			},
+		})
+	}
+	payload := "event: content_block_start\n" + sseData(map[string]any{
+		"type":  "content_block_start",
+		"index": 3,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"name":  "Bash",
+			"input": map[string]any{},
+		},
+	}) +
+		delta(`{"description":"x",`) +
+		delta(` "`) +
+		delta(`command":`) +
+		delta(` "`) +
+		delta(`cd"}`)
+	raw, ok, err := parseFableSSE(payload)
+	if err != nil || !ok {
+		t.Fatalf("parseFableSSE() = ok=%v err=%v", ok, err)
+	}
+	var content []map[string]any
+	if err := json.Unmarshal(raw, &content); err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 1 {
+		t.Fatalf("content blocks = %#v", content)
+	}
+	input, ok := content[0]["input"].(map[string]any)
+	if !ok || input["command"] != "cd" {
+		t.Fatalf("tool input = %#v", content[0]["input"])
+	}
+}
+
 func TestPrepareFableArchiveEntriesDropsDuplicateStreamingSources(t *testing.T) {
 	dir := t.TempDir()
 	content := `=== REQUEST INFO ===
