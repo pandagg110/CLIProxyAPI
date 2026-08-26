@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -22,11 +21,11 @@ Timestamp: 2026-08-26T01:02:03+08:00
 X-Claude-Code-Session-ID: session-1
 
 === REQUEST BODY ===
-{"model":"claude-sonnet-5","output_config":{"effort":"xhigh"},"system":"system prompt","tools":[{"name":"Read","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}
+{"model":"claude-sonnet-5","output_config":{"effort":"xhigh"},"system":"system prompt","tools":[{"name":"Read","input_schema":{"type":"object"}}],"client_metadata":{"turn_id":"turn-1","thread_id":"thread-1","session_id":"session-1"},"messages":[{"role":"user","content":"hello"}]}
 
 === RESPONSE ===
 Status: 200
-{"type":"message","role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"sig"},{"type":"text","text":"done"}]}
+{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"sig"},{"type":"text","text":"done"}]}
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -66,6 +65,26 @@ Status: 200
 	}
 	if _, wrapped := decoded["raw_log"]; wrapped {
 		t.Fatalf("Fable record was wrapped in raw_log: %s", output.Bytes())
+	}
+	if decoded["message_id"] != "turn-1" || decoded["conversation_id"] != "thread-1" || decoded["session_id"] != "session-1" {
+		t.Fatalf("unified identity = %#v", decoded)
+	}
+	if decoded["model_name"] != "claude-sonnet-5" || decoded["user_id"] != "alice" || decoded["think_type"] != "xhigh" {
+		t.Fatalf("unified metadata = %#v", decoded)
+	}
+	if decoded["timestamp"] != "2026-08-25T17:02:03Z" {
+		t.Fatalf("unified timestamp = %#v", decoded["timestamp"])
+	}
+	var response []any
+	if err := json.Unmarshal([]byte(decoded["response"].(string)), &response); err != nil || len(response) != 2 {
+		t.Fatalf("unified response = %#v", decoded["response"])
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(decoded["metadata"].(string)), &metadata); err != nil {
+		t.Fatalf("unified metadata JSON = %v", err)
+	}
+	if metadata["response"] == nil || metadata["request"] == nil {
+		t.Fatalf("unified metadata missing request/response = %#v", metadata)
 	}
 }
 
@@ -126,7 +145,7 @@ data: {"type":"message_stop"}
 	}
 }
 
-func TestBuildArchiveDeduplicatesFableSessionSnapshots(t *testing.T) {
+func TestBuildArchiveKeepsEachFableRequestRecord(t *testing.T) {
 	dir := t.TempDir()
 	workDir := filepath.Join(dir, "uploader")
 	root := filepath.Join(dir, "logs")
@@ -159,17 +178,35 @@ func TestBuildArchiveDeduplicatesFableSessionSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	decompressed := readZstdFile(t, archive)
-	if got := len(nonemptyLines(decompressed)); got != 1 {
-		t.Fatalf("JSONL record count = %d, want 1: %s", got, decompressed)
+	if got := len(nonemptyLines(decompressed)); got != 2 {
+		t.Fatalf("JSONL record count = %d, want 2: %s", got, decompressed)
 	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(decompressed))), &record); err != nil {
-		t.Fatal(err)
+	for index, line := range nonemptyLines(decompressed) {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["session_id"] != "session-1" || record["model_name"] != "claude-fable-5" {
+			t.Fatalf("record %d identity = %#v", index, record)
+		}
+		for _, field := range []string{
+			"message_id", "conversation_id", "session_id", "think_type",
+			"extra_info", "tools", "inputs", "response", "timestamp",
+			"model_name", "user_id", "tool_result", "metadata",
+		} {
+			if _, ok := record[field]; !ok {
+				t.Fatalf("record %d is missing %q: %#v", index, field, record)
+			}
+		}
+		if record["user_id"] != "alice" || record["response"] != `[{"text":"ok","type":"text"}]` {
+			t.Fatalf("record %d fields = %#v", index, record)
+		}
 	}
-	if record["session_id"] != "session-1" || record["model"] != "claude-fable-5" {
-		t.Fatalf("record identity = %#v", record)
+	var expectedJSONLBytes int64
+	for _, line := range nonemptyLines(decompressed) {
+		expectedJSONLBytes += int64(len(line) + 1)
 	}
-	if jsonlBytes != int64(len(nonemptyLines(decompressed)[0])+1) {
-		t.Fatalf("jsonl bytes = %d, decompressed line bytes = %d", jsonlBytes, len(nonemptyLines(decompressed)[0])+1)
+	if jsonlBytes != expectedJSONLBytes {
+		t.Fatalf("jsonl bytes = %d, decompressed line bytes = %d", jsonlBytes, expectedJSONLBytes)
 	}
 }

@@ -778,7 +778,7 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 	if filteredCount > 0 {
 		message := "records filtered during normalization (empty response outputs)"
 		if provider == providerClaude {
-			message = "Fable source records omitted or deduplicated during normalization"
+			message = "Fable source records omitted during normalization"
 		}
 		log.WithFields(log.Fields{
 			"hour":             hour.Format(time.RFC3339),

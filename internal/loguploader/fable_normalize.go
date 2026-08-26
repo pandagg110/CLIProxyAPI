@@ -15,8 +15,8 @@ const (
 	fableDeliveryModel   = "claude-fable-5"
 )
 
-// fableNormalizedRecord is the customer-facing six-field Claude session
-// record. Nested values remain native JSON rather than JSON strings.
+// fableNormalizedRecord is the internal Fable request record used for response
+// reconstruction before serialization. Each source request remains separate.
 type fableNormalizedRecord struct {
 	SessionID      string          `json:"session_id"`
 	Model          string          `json:"model"`
@@ -24,6 +24,17 @@ type fableNormalizedRecord struct {
 	System         json.RawMessage `json:"system"`
 	Tools          json.RawMessage `json:"tools"`
 	Messages       []fableMessage  `json:"messages"`
+
+	// These fields retain the source views needed by the common JSONL schema.
+	// They are intentionally unexported so the legacy internal representation
+	// is never emitted directly.
+	source           sourceLog
+	requestInfo      map[string]any
+	headers          map[string]any
+	requestBody      map[string]any
+	responseEnvelope map[string]any
+	responseContent  json.RawMessage
+	responseID       string
 }
 
 type fableMessage struct {
@@ -84,7 +95,8 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 		return nil, hash, fmt.Errorf("normalize fable messages %s: %w", source.Relative, errMessages)
 	}
 
-	response, ok, errResponse := parseFableResponse(firstFableResponseSection(text))
+	responseSection := firstFableResponseSection(text)
+	response, ok, errResponse := parseFableResponse(responseSection)
 	if errResponse != nil {
 		return nil, hash, fmt.Errorf("parse fable response %s: %w", source.Relative, errResponse)
 	}
@@ -92,13 +104,22 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 		return nil, hash, nil
 	}
 	messages = append(messages, fableMessage{Role: "assistant", Content: response})
+	requestInfo, _ := parsePairs(strings.Split(extractGateSection(text, "REQUEST INFO"), "\n"))
+	headers, _ := parsePairs(strings.Split(extractGateSection(text, "HEADERS"), "\n"))
 	return &fableNormalizedRecord{
-		SessionID:      sessionID,
-		Model:          model,
-		ThinkingEffort: effort,
-		System:         system,
-		Tools:          tools,
-		Messages:       messages,
+		SessionID:        sessionID,
+		Model:            model,
+		ThinkingEffort:   effort,
+		System:           system,
+		Tools:            tools,
+		Messages:         messages,
+		source:           source,
+		requestInfo:      requestInfo,
+		headers:          headers,
+		requestBody:      requestBody,
+		responseEnvelope: fableResponseEnvelope(responseSection, response),
+		responseContent:  response,
+		responseID:       fableResponseID(responseSection),
 	}, hash, nil
 }
 
@@ -133,13 +154,310 @@ func fableRequestHasMessages(path string) bool {
 }
 
 func writeFableRecordValue(dst interface{ Write([]byte) (int, error) }, record *fableNormalizedRecord, hash string) (int64, string, error) {
-	counter := &countingWriter{writer: dst}
-	encoder := json.NewEncoder(counter)
-	encoder.SetEscapeHTML(false)
-	if errEncode := encoder.Encode(record); errEncode != nil {
-		return counter.count, hash, fmt.Errorf("encode normalized fable record: %w", errEncode)
+	common := fableToCommonRecord(record)
+	return writeCodexRecordValue(dst, common, hash)
+}
+
+// fableToCommonRecord maps a Claude Messages snapshot into the same JSONL
+// schema used by Codex/OpenAI logs. The Fable-specific parsing remains above;
+// only the serialized contract is shared with the Codex path.
+func fableToCommonRecord(record *fableNormalizedRecord) *codexNormalizedRecord {
+	if record == nil {
+		return nil
 	}
-	return counter.count, hash, nil
+
+	requestBody := record.requestBody
+	clientMetadata, _ := requestBody["client_metadata"].(map[string]any)
+	if clientMetadata == nil {
+		clientMetadata = make(map[string]any)
+	}
+	turnMetadata := parseJSONObject(firstPresent(
+		caseInsensitiveGet(clientMetadata, "x-codex-turn-metadata"),
+		caseInsensitiveGetAny(record.headers, "x-codex-turn-metadata", "x-claude-turn-metadata"),
+		caseInsensitiveGet(requestBody, "turn_metadata"),
+	))
+
+	messageID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "turn_id"),
+		caseInsensitiveGet(turnMetadata, "turn_id"),
+		caseInsensitiveGetAny(record.headers, "x-client-request-id"),
+		record.responseID,
+	)
+	conversationID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "thread_id"),
+		caseInsensitiveGet(turnMetadata, "thread_id"),
+		caseInsensitiveGetAny(record.headers, "thread-id", "thread_id"),
+		caseInsensitiveGet(clientMetadata, "conversation_id"),
+	)
+	sessionID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "session_id"),
+		caseInsensitiveGet(turnMetadata, "session_id"),
+		fableSessionIDFromHeadersAndBody(record.headers, requestBody),
+		record.SessionID,
+	)
+
+	modelName := firstPresent(mapGet(requestBody, "model"), record.source.Model)
+	thinkType := fableThinkType(requestBody, record.ThinkingEffort)
+	timestamp := timestampToUTC(caseInsensitiveGet(record.requestInfo, "timestamp"))
+	if timestamp == nil || timestamp == "" {
+		timestamp = record.source.Timestamp.UTC().Format(time.RFC3339Nano)
+	}
+
+	tools, inputs := fableToolsAndInputs(requestBody)
+	response := jsonValueOrEmptyArray(record.responseContent)
+	toolResult := jsonValueOrEmptyArray(extractFableToolResults(record.responseContent))
+	if body, ok := record.responseEnvelope["body"].(map[string]any); ok {
+		if responseTools, exists := body["tools"]; exists {
+			toolResult = jsonValueOrEmptyArray(responseTools)
+		}
+	}
+
+	extraInfo := make(map[string]any)
+	mergeFableExtraInfo(extraInfo, turnMetadata)
+	mergeFableExtraInfo(extraInfo, clientMetadata)
+	if metadata, ok := requestBody["metadata"].(map[string]any); ok {
+		mergeFableExtraInfo(extraInfo, metadata)
+	}
+
+	metadata := map[string]any{
+		"source": map[string]any{
+			"source_file":       record.source.Relative,
+			"source_size_bytes": record.source.Size,
+			"timestamp":         record.source.Timestamp.Format(time.RFC3339Nano),
+			"provider":          record.source.Provider,
+		},
+		"request": map[string]any{
+			"info":    record.requestInfo,
+			"headers": record.headers,
+			"body":    requestBody,
+		},
+		"response": record.responseEnvelope,
+	}
+
+	return &codexNormalizedRecord{
+		MessageID:      fableStringValue(messageID),
+		ConversationID: fableStringValue(conversationID),
+		SessionID:      fableStringValue(sessionID),
+		ThinkType:      thinkType,
+		ExtraInfo:      jsonStringField(extraInfo),
+		Tools:          jsonStringField(tools),
+		Inputs:         jsonStringField(inputs),
+		Response:       jsonStringField(response),
+		Timestamp:      fableStringValue(timestamp),
+		ModelName:      fableStringValue(modelName),
+		UserID:         record.source.KeyName,
+		ToolResult:     jsonStringField(toolResult),
+		Metadata:       jsonStringField(metadata),
+	}
+}
+
+func fableStringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func fableThinkType(body map[string]any, fallback string) any {
+	if reasoning, ok := body["reasoning"].(map[string]any); ok {
+		if effort := firstPresent(reasoning["effort"]); effort != nil {
+			return effort
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "high"
+}
+
+func jsonValueOrEmptyArray(value any) any {
+	if value == nil {
+		return []any{}
+	}
+	if raw, ok := value.(json.RawMessage); ok {
+		var decoded any
+		if json.Unmarshal(raw, &decoded) == nil && decoded != nil {
+			return decoded
+		}
+		return []any{}
+	}
+	if text, ok := value.(string); ok {
+		var decoded any
+		if json.Unmarshal([]byte(text), &decoded) == nil && decoded != nil {
+			return decoded
+		}
+	}
+	return value
+}
+
+func fableToolsAndInputs(body map[string]any) (any, any) {
+	rawInputs := body["inputs"]
+	if rawInputs == nil {
+		rawInputs = body["input"]
+	}
+	if rawInputs == nil {
+		rawInputs = body["messages"]
+	}
+
+	var additionalTools []any
+	filteredInputs := rawInputs
+	if inputList, ok := rawInputs.([]any); ok {
+		filtered := make([]any, 0, len(inputList))
+		for _, item := range inputList {
+			object, ok := item.(map[string]any)
+			if ok && object["type"] == "additional_tools" {
+				if listed, ok := object["tools"].([]any); ok {
+					additionalTools = append(additionalTools, listed...)
+				}
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		filteredInputs = filtered
+	}
+
+	tools := any(additionalTools)
+	if len(additionalTools) == 0 {
+		tools = body["tools"]
+	}
+	return jsonValueOrEmptyArray(tools), jsonValueOrEmptyArray(filteredInputs)
+}
+
+func mergeFableExtraInfo(target, values map[string]any) {
+	for key, value := range values {
+		switch strings.ToLower(key) {
+		case "turn_id", "thread_id", "session_id", "conversation_id", "x-codex-turn-metadata":
+			continue
+		}
+		if _, exists := target[key]; !exists {
+			target[key] = value
+		}
+	}
+}
+
+func fableSessionIDFromHeadersAndBody(headers map[string]any, body map[string]any) string {
+	for _, key := range []string{
+		"x-claude-code-session-id", "x-session-id", "session-id",
+		"x-stainless-session-id", "claude-session-id",
+	} {
+		if value := strings.TrimSpace(fmt.Sprint(caseInsensitiveGetAny(headers, key))); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	for _, value := range []any{
+		caseInsensitiveGet(body, "session_id", "sessionId"),
+		fableNestedValue(body, "metadata", "session_id"),
+		fableNestedValue(body, "metadata", "sessionId"),
+		caseInsensitiveGet(body, "client_metadata"),
+	} {
+		if sessionID := fableStringOrJSONField(value, "session_id"); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func extractFableToolResults(value any) []any {
+	if raw, ok := value.(json.RawMessage); ok {
+		var decoded any
+		if json.Unmarshal(raw, &decoded) == nil {
+			value = decoded
+		}
+	}
+	return extractFableToolResultsValue(value)
+}
+
+func extractFableToolResultsValue(value any) []any {
+	results := make([]any, 0)
+	if object, ok := value.(map[string]any); ok {
+		if content, exists := object["content"]; exists {
+			results = append(results, extractFableToolResultsValue(content)...)
+		}
+		if tools, exists := object["tools"]; exists {
+			results = append(results, extractFableToolResultsValue(tools)...)
+		}
+		if object["type"] == "tool_result" {
+			results = append(results, object)
+		}
+		return results
+	}
+	items, _ := value.([]any)
+	for _, item := range items {
+		results = append(results, extractFableToolResultsValue(item)...)
+	}
+	return results
+}
+
+func fableResponseEnvelope(section string, content json.RawMessage) map[string]any {
+	trimmed := strings.TrimSpace(section)
+	lines := strings.Split(trimmed, "\n")
+	start := payloadStartIndex(lines)
+	prelude := strings.Join(lines[:start], "\n")
+	payload := strings.Join(lines[start:], "\n")
+	allPairs, _ := parsePairs(strings.Split(prelude, "\n"))
+	info := make(map[string]any)
+	headers := make(map[string]any)
+	var status any
+	for key, value := range allPairs {
+		switch strings.ToLower(key) {
+		case "status":
+			status = parseStatusValue(value)
+		case "timestamp":
+			info[key] = value
+		default:
+			headers[key] = value
+		}
+	}
+	if object, errDecode := decodeFableObject(payload); errDecode == nil {
+		return map[string]any{
+			"info":    info,
+			"status":  status,
+			"headers": headers,
+			"body":    object,
+		}
+	}
+	return map[string]any{
+		"info":    info,
+		"status":  status,
+		"headers": headers,
+		"body":    map[string]any{"content": jsonValueOrEmptyArray(content)},
+		"stream":  map[string]any{"is_sse": true, "raw_sse": payload},
+	}
+}
+
+func fableResponseID(section string) string {
+	trimmed := strings.TrimSpace(section)
+	lines := strings.Split(trimmed, "\n")
+	start := payloadStartIndex(lines)
+	payload := strings.Join(lines[start:], "\n")
+	if object, errDecode := decodeFableObject(payload); errDecode == nil {
+		if id, ok := object["id"].(string); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+		if body, ok := object["body"].(map[string]any); ok {
+			if id, ok := body["id"].(string); ok {
+				return strings.TrimSpace(id)
+			}
+		}
+	}
+	for _, line := range strings.Split(trimmed, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
+			continue
+		}
+		if message, ok := event["message"].(map[string]any); ok {
+			if id, ok := message["id"].(string); ok && strings.TrimSpace(id) != "" {
+				return strings.TrimSpace(id)
+			}
+		}
+		if id, ok := event["id"].(string); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
 }
 
 type fableArchiveEntry struct {
@@ -148,20 +466,18 @@ type fableArchiveEntry struct {
 	Legacy bool
 }
 
-// prepareFableArchiveEntries keeps one complete conversation snapshot per
-// session in an hourly archive. The latest request contains the full Claude
-// message history, so older requests for the same session are represented by
-// their source checksums but do not duplicate a JSONL record.
+// prepareFableArchiveEntries converts every Fable request independently. A
+// session can contain multiple request logs, and each request must produce its
+// own JSONL record even when the request body repeats the full message history.
 func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error) {
-	selected := make(map[string]fableArchiveEntry)
-	var legacy []fableArchiveEntry
+	entries := make([]fableArchiveEntry, 0, len(sources))
 	for index := range sources {
 		record, hash, errNormalize := normalizeFableRecord(sources[index])
 		if errNormalize != nil {
 			if !fableRequestHasMessages(sources[index].Path) {
 				sources[index].SHA256 = hashSourceFile(sources[index].Path)
 				sources[index].JSONLBytes = 0
-				legacy = append(legacy, fableArchiveEntry{Index: index, Legacy: true})
+				entries = append(entries, fableArchiveEntry{Index: index, Legacy: true})
 				continue
 			}
 			return nil, errNormalize
@@ -171,17 +487,8 @@ func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error
 		if record == nil {
 			continue
 		}
-		key := sources[index].KeyName + "\n" + fableRecordSessionID(record)
-		previous, exists := selected[key]
-		if !exists || fableSourceSortLess(sources[previous.Index], sources[index]) {
-			selected[key] = fableArchiveEntry{Index: index, Record: record}
-		}
+		entries = append(entries, fableArchiveEntry{Index: index, Record: record})
 	}
-	entries := make([]fableArchiveEntry, 0, len(selected))
-	for _, entry := range selected {
-		entries = append(entries, entry)
-	}
-	entries = append(entries, legacy...)
 	sort.Slice(entries, func(i, j int) bool {
 		return sources[entries[i].Index].Relative < sources[entries[j].Index].Relative
 	})
@@ -562,28 +869,4 @@ func cloneFableMap(value map[string]any) map[string]any {
 		result[key] = item
 	}
 	return result
-}
-
-func fableRecordSessionID(record *fableNormalizedRecord) string {
-	if record == nil {
-		return ""
-	}
-	return record.SessionID
-}
-
-func fableSourceSortLess(left, right sourceLog) bool {
-	if !left.Timestamp.Equal(right.Timestamp) {
-		return left.Timestamp.Before(right.Timestamp)
-	}
-	if !left.ModTime.Equal(right.ModTime) {
-		return left.ModTime.Before(right.ModTime)
-	}
-	return left.Relative < right.Relative
-}
-
-func fableTimestampOrModTime(source sourceLog) time.Time {
-	if !source.Timestamp.IsZero() {
-		return source.Timestamp
-	}
-	return source.ModTime
 }

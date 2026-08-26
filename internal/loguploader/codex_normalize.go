@@ -598,6 +598,13 @@ func writeCodexNormalizedRecord(dst io.Writer, source sourceLog) (int64, string,
 	if record == nil {
 		return 0, hash, nil
 	}
+	return writeCodexRecordValue(dst, record, hash)
+}
+
+func writeCodexRecordValue(dst io.Writer, record *codexNormalizedRecord, hash string) (int64, string, error) {
+	if record == nil {
+		return 0, hash, nil
+	}
 
 	counter := &countingWriter{writer: dst}
 	encoder := json.NewEncoder(counter)
