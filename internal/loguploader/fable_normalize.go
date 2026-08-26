@@ -221,19 +221,11 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 		timestamp = record.source.Timestamp.UTC().Format(time.RFC3339Nano)
 	}
 
-	tools, inputs := fableToolsAndInputs(requestBody)
 	toolResult := jsonValueOrEmptyArray(extractFableToolResults(record.responseContent))
 	if body, ok := record.responseEnvelope["body"].(map[string]any); ok {
 		if responseTools, exists := body["tools"]; exists {
 			toolResult = jsonValueOrEmptyArray(responseTools)
 		}
-	}
-
-	extraInfo := make(map[string]any)
-	mergeFableExtraInfo(extraInfo, turnMetadata)
-	mergeFableExtraInfo(extraInfo, clientMetadata)
-	if metadata, ok := requestBody["metadata"].(map[string]any); ok {
-		mergeFableExtraInfo(extraInfo, metadata)
 	}
 
 	return &fableStructuredRecord{
@@ -255,18 +247,8 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 			"think_type":                 fableThinkType(requestBody, record.ThinkingEffort),
 			"timestamp":                  fableStringValue(timestamp),
 			"model":                      firstPresent(mapGet(requestBody, "model"), record.source.Model),
-			"model_name":                 firstPresent(mapGet(requestBody, "model"), record.source.Model),
 			"user_id":                    record.source.KeyName,
-			"source": map[string]any{
-				"source_file":       record.source.Relative,
-				"source_size_bytes": record.source.Size,
-				"timestamp":         record.source.Timestamp.Format(time.RFC3339Nano),
-				"provider":          record.source.Provider,
-			},
-			"extra_info":  extraInfo,
-			"tools":       jsonValueOrEmptyArray(tools),
-			"inputs":      jsonValueOrEmptyArray(inputs),
-			"tool_result": toolResult,
+			"tool_result":                toolResult,
 		},
 	}
 }

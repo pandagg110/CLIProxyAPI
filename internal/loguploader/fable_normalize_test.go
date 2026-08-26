@@ -79,8 +79,13 @@ Status: 200
 		t.Fatalf("structured response = %#v", decoded["response"])
 	}
 	metadata, ok := decoded["metadata"].(map[string]any)
-	if !ok || metadata["source"] == nil || metadata["extra_info"] == nil {
+	if !ok {
 		t.Fatalf("structured metadata = %#v", decoded["metadata"])
+	}
+	for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source"} {
+		if _, exists := metadata[field]; exists {
+			t.Fatalf("structured metadata contains removed field %q: %#v", field, metadata)
+		}
 	}
 	if metadata["message_id"] != "turn-1" || metadata["conversation_id"] != "thread-1" || metadata["session_id"] != "session-1" {
 		t.Fatalf("structured identity = %#v", metadata)
@@ -320,8 +325,14 @@ func TestBuildArchiveKeepsEachFableRequestRecord(t *testing.T) {
 				t.Fatalf("record %d is missing %q: %#v", index, field, record)
 			}
 		}
-		if metadata, ok := record["metadata"].(map[string]any); !ok || metadata["source"] == nil || metadata["extra_info"] == nil || metadata["session_id"] != "session-1" || metadata["model"] != "claude-fable-5" {
+		metadata, ok := record["metadata"].(map[string]any)
+		if !ok || metadata["session_id"] != "session-1" || metadata["model"] != "claude-fable-5" {
 			t.Fatalf("record %d metadata = %#v", index, record["metadata"])
+		}
+		for _, field := range []string{"tools", "inputs", "model_name", "extra_info", "source"} {
+			if _, exists := metadata[field]; exists {
+				t.Fatalf("record %d metadata contains removed field %q: %#v", index, field, metadata)
+			}
 		}
 	}
 	var expectedJSONLBytes int64
