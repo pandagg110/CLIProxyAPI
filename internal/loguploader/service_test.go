@@ -119,7 +119,7 @@ func TestPreparedHourPersistsExactUsageForMixedKeyNamesAndFilteredCodex(t *testi
 	}
 }
 
-func TestPreparedHourPersistsAllFilteredUsage(t *testing.T) {
+func TestSkipEmptyCodexArchiveDoesNotUpload(t *testing.T) {
 	t.Parallel()
 
 	location := mustLocation(t, "Asia/Shanghai")
@@ -132,38 +132,85 @@ func TestPreparedHourPersistsAllFilteredUsage(t *testing.T) {
 		`{"model":"gpt-5.6-sol","input":"filtered"}` + "\n" +
 		"=== RESPONSE ===\n" +
 		`{"ok":true}` + "\n"
-	firstPath := mustWriteLog(t, root, "panda", "v1-responses-2026-07-15T011000-filtered.log",
+	firstPath := mustWriteLog(t, root, "unauthenticated", "v1-responses-2026-07-15T011000-filtered.log",
 		filteredRaw, hour.Add(40*time.Minute))
-	secondPath := mustWriteLog(t, root, "panda", "v1-responses-2026-07-15T012000-filtered.log",
+	mustWriteLog(t, root, "unauthenticated", "v1-responses-2026-07-15T012000-filtered.log",
 		filteredRaw, hour.Add(40*time.Minute))
-	_, firstSize := exactSourceUsage(t, root, firstPath, location)
-	_, secondSize := exactSourceUsage(t, root, secondPath, location)
 
+	uploader := &fakeObjectUploader{}
 	cfg := testConfig(root, workDir)
 	cfg.Upload.Enabled = true
-	cfg.Supabase.Enabled = true
-	service := mustTestService(t, cfg, &fakeObjectUploader{err: errors.New("retain all-filtered batch")}, now)
-	if errRun := service.RunOnce(context.Background(), false); errRun == nil {
-		t.Fatal("RunOnce error = nil, want upload failure that retains prepared state")
+	cfg.Retention.DeleteSourceAfterUpload = true
+	service := mustTestService(t, cfg, uploader, now)
+	if errRun := service.RunOnce(context.Background(), false); errRun != nil {
+		t.Fatalf("RunOnce empty Codex hour: %v", errRun)
+	}
+	if len(uploader.calls) != 0 {
+		t.Fatalf("upload calls = %d, want 0 for empty JSONL archive", len(uploader.calls))
+	}
+	if archives := findFilesWithSuffix(t, workDir, ".jsonl.zst"); len(archives) != 0 {
+		t.Fatalf("empty archives left on disk: %v", archives)
+	}
+	if _, errStat := os.Stat(firstPath); !errors.Is(errStat, os.ErrNotExist) {
+		t.Fatalf("filtered source still exists: %v", errStat)
 	}
 
 	state, errLoad := service.loadState()
 	if errLoad != nil {
-		t.Fatalf("reload all-filtered prepared state: %v", errLoad)
+		t.Fatalf("reload state: %v", errLoad)
 	}
-	prepared, exists := state.PreparedHours[hourStateKey(hour, providerCodex)]
-	if !exists {
-		t.Fatalf("prepared hour missing: %+v", state.PreparedHours)
+	if len(state.PreparedHours) != 0 || len(state.Hours) != 0 || len(state.Objects) != 0 {
+		t.Fatalf("empty hour sealed or prepared: prepared=%d hours=%d objects=%d", len(state.PreparedHours), len(state.Hours), len(state.Objects))
 	}
-	if prepared.JSONLBytes != 0 {
-		t.Errorf("all-filtered JSONL bytes = %d, want 0", prepared.JSONLBytes)
+	audit := readAudit(t, workDir)
+	if len(audit) != 1 || audit[0].Status != "skipped_empty" || audit[0].JSONLBytes != 0 || audit[0].ObjectKey != "" {
+		t.Fatalf("audit = %+v, want skipped_empty with no object", audit)
 	}
-	if len(prepared.Usage) != 1 {
-		t.Fatalf("all-filtered usage rows = %d, want 1: %+v", len(prepared.Usage), prepared.Usage)
+}
+
+func TestSkipEmptyArchiveLeavesHourOpenForLaterSources(t *testing.T) {
+	t.Parallel()
+
+	location := mustLocation(t, "Asia/Shanghai")
+	now := time.Date(2026, time.July, 15, 3, 10, 0, 0, location)
+	hour := time.Date(2026, time.July, 15, 1, 0, 0, 0, location)
+	root := filepath.Join(t.TempDir(), "keys")
+	workDir := filepath.Join(t.TempDir(), "uploader")
+	filteredRaw := "Timestamp: " + hour.Add(10*time.Minute).Format(time.RFC3339Nano) + "\n" +
+		"=== REQUEST BODY ===\n" +
+		`{"model":"gpt-5.6-sol","input":"filtered"}` + "\n" +
+		"=== RESPONSE ===\n" +
+		`{"ok":true}` + "\n"
+	mustWriteLog(t, root, "unauthenticated", "v1-responses-2026-07-15T011000-filtered.log",
+		filteredRaw, hour.Add(40*time.Minute))
+
+	uploader := &fakeObjectUploader{}
+	cfg := testConfig(root, workDir)
+	cfg.Upload.Enabled = true
+	cfg.Retention.DeleteSourceAfterUpload = true
+	cfg.Retention.KeepLocalArchives = true
+	service := mustTestService(t, cfg, uploader, now)
+	if errRun := service.RunOnce(context.Background(), false); errRun != nil {
+		t.Fatalf("RunOnce filtered hour: %v", errRun)
 	}
-	if got := prepared.Usage[0]; got.KeyName != "panda" || got.Provider != providerCodex ||
-		got.SourceCount != 2 || got.SourceBytes != firstSize+secondSize || got.JSONLBytes != 0 {
-		t.Errorf("all-filtered usage = %+v, want count=2 source_bytes=%d jsonl_bytes=0", got, firstSize+secondSize)
+	if len(uploader.calls) != 0 {
+		t.Fatalf("filtered hour uploaded unexpectedly: %+v", uploader.calls)
+	}
+
+	mustWriteLog(t, root, "alice", "v1-responses-2026-07-15T012000-real.log",
+		requestLog(hour.Add(20*time.Minute), "gpt-5.6-sol", "real response"), hour.Add(40*time.Minute))
+	if errRun := service.RunOnce(context.Background(), false); errRun != nil {
+		t.Fatalf("RunOnce real Codex hour: %v", errRun)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("upload calls = %d, want 1 after real source arrived", len(uploader.calls))
+	}
+	state, errLoad := service.loadState()
+	if errLoad != nil {
+		t.Fatalf("reload state: %v", errLoad)
+	}
+	if _, exists := state.Hours[hourStateKey(hour, providerCodex)]; !exists {
+		t.Fatal("real Codex hour was not sealed")
 	}
 }
 

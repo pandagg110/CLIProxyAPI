@@ -609,6 +609,9 @@ func (s *Service) processBatch(ctx context.Context, hour time.Time, provider str
 		return s.appendAudit(record)
 	}
 	summarizeAuditSources(&record, sources)
+	if jsonlSize == 0 {
+		return s.skipEmptyArchive(record, sources, archivePath, state, dryRun)
+	}
 	log.WithFields(log.Fields{
 		"hour":             hour.Format(time.RFC3339),
 		"source_files":     len(sources),
@@ -704,6 +707,77 @@ func (s *Service) recordBatchFailure(record auditRecord, cause error) error {
 	record.Status = "failed"
 	record.Error = cause.Error()
 	return errors.Join(cause, s.appendAudit(record))
+}
+
+// skipEmptyArchive drops a 0-byte JSONL hour (all Codex/Fable records filtered)
+// instead of uploading a 0B object and sealing the hour. Source fingerprints are
+// recorded so the empty files are not retried; the hour stays unsealed so later
+// real logs for the same hour can still upload.
+func (s *Service) skipEmptyArchive(record auditRecord, sources []sourceLog, archivePath string, state *uploadState, dryRun bool) error {
+	if archivePath != "" {
+		if errRemove := os.Remove(archivePath); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+			return s.recordBatchFailure(record, fmt.Errorf("remove empty archive: %w", errRemove))
+		}
+	}
+	record.JSONLBytes = 0
+	record.CompressedBytes = 0
+	record.ArchivePath = ""
+	record.ObjectKey = ""
+	record.Status = "skipped_empty"
+	record.Error = fmt.Sprintf("skipped empty %s archive for hour %s (%d filtered source log(s))", record.Provider, record.Hour.Format(time.RFC3339), len(sources))
+	if dryRun {
+		return s.appendAudit(record)
+	}
+
+	now := s.now().In(s.location)
+	hourKey := hourStateKey(record.Hour, record.Provider)
+	for _, source := range sources {
+		if source.Fingerprint == "" {
+			return s.recordBatchFailure(record, fmt.Errorf("source fingerprint is missing for empty archive skip: %s", source.Relative))
+		}
+		if source.SHA256 == "" {
+			return s.recordBatchFailure(record, fmt.Errorf("source checksum is missing for empty archive skip: %s", source.Relative))
+		}
+		state.Uploaded[source.Fingerprint] = uploadedSource{
+			HourKey:      hourKey,
+			TargetID:     s.target.ID,
+			UploadedAt:   now,
+			RelativePath: source.Relative,
+			Size:         source.Size,
+			ModTime:      source.ModTime,
+			SHA256:       source.SHA256,
+		}
+	}
+	if errSave := s.saveState(*state); errSave != nil {
+		return s.recordBatchFailure(record, fmt.Errorf("persist skipped empty archive: %w", errSave))
+	}
+
+	if s.cfg.Retention.DeleteSourceAfterUpload {
+		fingerprints := make([]string, 0, len(sources))
+		for _, source := range sources {
+			fingerprints = append(fingerprints, source.Fingerprint)
+		}
+		changed, deleteErrors := s.deleteUploadedSources(*state, fingerprints, &record.DeletedSources)
+		if changed {
+			if errSave := s.saveState(*state); errSave != nil {
+				deleteErrors = append(deleteErrors, errSave)
+			}
+		}
+		if len(deleteErrors) > 0 {
+			record.Status = "skipped_empty_delete_pending"
+			record.Error += "; " + errors.Join(deleteErrors...).Error()
+			for _, errDelete := range deleteErrors {
+				log.WithError(errDelete).Warn("failed to delete filtered source after skipping empty archive")
+			}
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"hour":         record.Hour.Format(time.RFC3339),
+		"provider":     record.Provider,
+		"source_files": len(sources),
+	}).Info("skipped empty hourly archive")
+	return s.appendAudit(record)
 }
 
 func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider string, sources []sourceLog, dryRun bool) (string, int64, int64, error) {
