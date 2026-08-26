@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ const (
 	fableUpstreamSonnet5 = "claude-sonnet-5"
 	fableDeliveryModel   = "claude-fable-5"
 )
+
+var fableErrorStatusRe = regexp.MustCompile(`(?mi)^HTTP Status:\s*(400|401|500|503)\b`)
 
 // fableNormalizedRecord is the internal Fable request record used for response
 // reconstruction before serialization. Each source request remains separate.
@@ -35,6 +38,7 @@ type fableNormalizedRecord struct {
 	responseEnvelope map[string]any
 	responseContent  json.RawMessage
 	responseID       string
+	streaming        bool
 }
 
 type fableMessage struct {
@@ -68,6 +72,12 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
 	text := string(raw)
+	responseSection := firstFableResponseSection(text)
+	if fableResponseStatusExcluded(responseSection) || fableErrorResponseStatusExcluded(text) {
+		// Authentication, client, and transient upstream failures are not
+		// conversation data and must not be published in the JSONL archive.
+		return nil, hash, nil
+	}
 
 	requestBody, errRequest := decodeFableObject(firstFableSection(text, "REQUEST BODY"))
 	if errRequest != nil {
@@ -95,7 +105,6 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 		return nil, hash, fmt.Errorf("normalize fable messages %s: %w", source.Relative, errMessages)
 	}
 
-	responseSection := firstFableResponseSection(text)
 	response, ok, errResponse := parseFableResponse(responseSection)
 	if errResponse != nil {
 		return nil, hash, fmt.Errorf("parse fable response %s: %w", source.Relative, errResponse)
@@ -120,6 +129,7 @@ func normalizeFableRecord(source sourceLog) (*fableNormalizedRecord, string, err
 		responseEnvelope: fableResponseEnvelope(responseSection, response),
 		responseContent:  response,
 		responseID:       fableResponseID(responseSection),
+		streaming:        strings.Contains(responseSection, "data:") || strings.Contains(responseSection, "event:"),
 	}, hash, nil
 }
 
@@ -467,10 +477,12 @@ type fableArchiveEntry struct {
 }
 
 // prepareFableArchiveEntries converts every Fable request independently. A
-// session can contain multiple request logs, and each request must produce its
-// own JSONL record even when the request body repeats the full message history.
+// session can contain multiple request logs, and each request normally produces
+// its own JSONL record even when the request body repeats the full message
+// history. Exact duplicate streaming snapshots are omitted.
 func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error) {
 	entries := make([]fableArchiveEntry, 0, len(sources))
+	seenStreaming := make(map[string]struct{})
 	for index := range sources {
 		record, hash, errNormalize := normalizeFableRecord(sources[index])
 		if errNormalize != nil {
@@ -486,6 +498,19 @@ func prepareFableArchiveEntries(sources []sourceLog) ([]fableArchiveEntry, error
 		sources[index].JSONLBytes = 0
 		if record == nil {
 			continue
+		}
+		if record.streaming {
+			// Streaming reconnects can leave a second source file containing the
+			// same completed response for the same conversation. Keep the first
+			// copy while retaining both source fingerprints for accounting.
+			requestBytes, _ := json.Marshal(record.requestBody)
+			key := record.SessionID + "\n" +
+				fmt.Sprintf("%x", sha256.Sum256(requestBytes)) + "\n" +
+				fmt.Sprintf("%x", sha256.Sum256(record.responseContent))
+			if _, duplicate := seenStreaming[key]; duplicate {
+				continue
+			}
+			seenStreaming[key] = struct{}{}
 		}
 		entries = append(entries, fableArchiveEntry{Index: index, Record: record})
 	}
@@ -727,8 +752,70 @@ func parseFableResponse(section string) (json.RawMessage, bool, error) {
 	return parseFableSSE(trimmed)
 }
 
+func fableResponseStatusExcluded(section string) bool {
+	status := fableResponseStatus(section)
+	switch status {
+	case 400, 401, 500, 503:
+		return true
+	default:
+		return false
+	}
+}
+
+func fableErrorResponseStatusExcluded(text string) bool {
+	indices := gateSectionPattern.FindAllStringSubmatchIndex(text, -1)
+	for index, location := range indices {
+		name := strings.TrimSpace(text[location[2]:location[3]])
+		if !strings.EqualFold(name, "API ERROR RESPONSE") {
+			continue
+		}
+		end := len(text)
+		if index+1 < len(indices) {
+			end = indices[index+1][0]
+		}
+		if fableErrorStatusRe.MatchString(text[location[1]:end]) {
+			return true
+		}
+	}
+	return false
+}
+
+func fableResponseStatus(section string) int {
+	trimmed := strings.TrimSpace(section)
+	if trimmed == "" {
+		return 0
+	}
+	lines := strings.Split(trimmed, "\n")
+	start := payloadStartIndex(lines)
+	if start > len(lines) {
+		start = len(lines)
+	}
+	pairs, _ := parsePairs(lines[:start])
+	for key, value := range pairs {
+		if strings.EqualFold(strings.TrimSpace(key), "status") {
+			if parsed, ok := parseStatusValue(value).(int); ok {
+				return parsed
+			}
+		}
+	}
+	// Some clients write a JSON response object without a status prelude.
+	payload := strings.Join(lines[start:], "\n")
+	if object, errDecode := decodeFableObject(payload); errDecode == nil {
+		if parsed, ok := parseStatusValue(object["status"]).(int); ok {
+			return parsed
+		}
+		if response, ok := object["response"].(map[string]any); ok {
+			if parsed, ok := parseStatusValue(response["status"]).(int); ok {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
 func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 	blocks := make(map[int]*fableResponseBlock)
+	seenEvents := make(map[string]struct{})
 	var currentEvent strings.Builder
 	flush := func() error {
 		data := strings.TrimSpace(currentEvent.String())
@@ -739,6 +826,15 @@ func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 		var event map[string]any
 		if errDecode := json.Unmarshal([]byte(data), &event); errDecode != nil {
 			return nil
+		}
+		// A few transports replay an identical SSE event while reconnecting.
+		// Ignore exact event replays so their deltas are not appended twice.
+		if encoded, errEncode := json.Marshal(event); errEncode == nil {
+			key := string(encoded)
+			if _, exists := seenEvents[key]; exists {
+				return nil
+			}
+			seenEvents[key] = struct{}{}
 		}
 		return applyFableSSEEvent(blocks, event)
 	}

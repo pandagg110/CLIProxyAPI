@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,6 +143,125 @@ data: {"type":"message_stop"}
 	input, ok := blocks[0]["input"].(map[string]any)
 	if !ok || input["path"] != "a.go" {
 		t.Fatalf("tool input = %#v", blocks[0]["input"])
+	}
+}
+
+func TestNormalizeFableRecordFiltersSelectedHTTPErrorStatuses(t *testing.T) {
+	for _, status := range []int{400, 401, 500, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "fable.log")
+			content := "=== REQUEST INFO ===\nURL: /v1/messages\nTimestamp: 2026-08-26T01:02:03+08:00\n\n=== REQUEST BODY ===\n" +
+				`{"model":"claude-fable-5","messages":[{"role":"user","content":"hello"}]}` +
+				fmt.Sprintf("\n\n=== RESPONSE ===\nStatus: %d\n{\"content\":[{\"type\":\"text\",\"text\":\"error\"}]}\n", status)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := sourceLog{Path: path, Relative: "alice/fable.log", KeyName: "alice", Model: "claude-fable-5", Provider: providerClaude, Timestamp: info.ModTime(), ModTime: info.ModTime(), Size: info.Size()}
+			record, _, err := normalizeFableRecord(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record != nil {
+				t.Fatalf("status %d was not filtered: %#v", status, record)
+			}
+		})
+	}
+}
+
+func TestNormalizeFableRecordFiltersAPIErrorResponseStatus(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fable.log")
+	content := `=== REQUEST BODY ===
+{"model":"claude-fable-5","messages":[{"role":"user","content":"hello"}]}
+
+=== API ERROR RESPONSE ===
+HTTP Status: 401
+unauthorized
+
+=== RESPONSE ===
+Status: 200
+{"content":[{"type":"text","text":"should not upload"}]}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceLog{Path: path, Relative: "alice/fable.log", KeyName: "alice", Model: "claude-fable-5", Provider: providerClaude, Timestamp: info.ModTime(), ModTime: info.ModTime(), Size: info.Size()}
+	record, _, err := normalizeFableRecord(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record != nil {
+		t.Fatalf("API error response was not filtered: %#v", record)
+	}
+}
+
+func TestParseFableSSEDeduplicatesExactEventReplay(t *testing.T) {
+	payload := "event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n"
+	raw, ok, err := parseFableSSE(payload)
+	if err != nil || !ok {
+		t.Fatalf("parseFableSSE() = ok=%v err=%v", ok, err)
+	}
+	var content []map[string]any
+	if err := json.Unmarshal(raw, &content); err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 1 || content[0]["text"] != "hello" {
+		t.Fatalf("replayed SSE event was retained: %#v", content)
+	}
+}
+
+func TestPrepareFableArchiveEntriesDropsDuplicateStreamingSources(t *testing.T) {
+	dir := t.TempDir()
+	content := `=== REQUEST INFO ===
+URL: /v1/messages
+Timestamp: 2026-08-26T01:02:03+08:00
+
+=== HEADERS ===
+x-claude-code-session-id: session-1
+
+=== REQUEST BODY ===
+{"model":"claude-fable-5","messages":[{"role":"user","content":"hello"}]}
+
+=== RESPONSE ===
+Status: 200
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+`
+	sources := make([]sourceLog, 0, 2)
+	for _, name := range []string{"first.log", "second.log"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, sourceLog{Path: path, Relative: "alice/" + name, KeyName: "alice", Model: "claude-fable-5", Provider: providerClaude, Timestamp: info.ModTime(), ModTime: info.ModTime(), Size: info.Size()})
+	}
+	entries, err := prepareFableArchiveEntries(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("streaming duplicate entries = %d, want 1", len(entries))
 	}
 }
 
