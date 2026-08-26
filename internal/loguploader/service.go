@@ -742,49 +742,10 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 	var errWrite error
 	var filteredCount int
 	if provider == providerClaude {
-		entries, invalidSources, errEntries := prepareFableArchiveEntriesWithInvalid(sources)
-		if errEntries != nil {
-			errWrite = errEntries
-		} else {
-			for _, invalid := range invalidSources {
-				reason := invalid.Err
-				sources[invalid.Index].QuarantineReason = reason.Error()
-				if dryRun {
-					continue
-				}
-				if _, errQuarantine := s.quarantineSource(sources[invalid.Index], reason); errQuarantine != nil {
-					errWrite = errQuarantine
-					break
-				}
-			}
-			if errWrite != nil {
-				entries = nil
-			}
-			for _, entry := range entries {
-				if errContext := ctx.Err(); errContext != nil {
-					errWrite = errContext
-					break
-				}
-				var written int64
-				var errRecord error
-				if entry.Legacy {
-					written, sources[entry.Index].SHA256, errRecord = writeRawJSONLRecordWithHash(encoder, sources[entry.Index])
-				} else {
-					written, _, errRecord = writeFableRecordValue(encoder, entry.Record, sources[entry.Index].SHA256)
-				}
-				if errRecord != nil {
-					errWrite = errRecord
-					break
-				}
-				nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
-				if errSize != nil {
-					errWrite = errSize
-					break
-				}
-				jsonlSize = nextJSONLSize
-				sources[entry.Index].JSONLBytes = written
-			}
-		}
+		// Codex writes one source at a time. Fable used to parse the whole hour
+		// into memory first (duplicate-stream detection), which OOM'd small hosts
+		// on a ~3GB hour. Stream per file and keep only dedup keys.
+		jsonlSize, errWrite = s.writeFableHourArchive(ctx, encoder, sources, dryRun)
 		for _, source := range sources {
 			if source.JSONLBytes == 0 {
 				filteredCount++
@@ -867,6 +828,69 @@ func (s *Service) buildArchive(ctx context.Context, hour time.Time, provider str
 		return "", 0, 0, fmt.Errorf("stat compressed archive: %w", errStat)
 	}
 	return archivePath, jsonlSize, info.Size(), nil
+}
+
+// writeFableHourArchive normalizes and writes one Claude source at a time,
+// matching the Codex hourly path. Duplicate streaming snapshots are skipped
+// using compact keys only; parsed records are not retained across files.
+func (s *Service) writeFableHourArchive(ctx context.Context, encoder io.Writer, sources []sourceLog, dryRun bool) (int64, error) {
+	seenStreaming := make(map[string]struct{})
+	var jsonlSize int64
+	for index := range sources {
+		if errContext := ctx.Err(); errContext != nil {
+			return jsonlSize, errContext
+		}
+		record, hash, errNormalize := normalizeFableRecord(sources[index])
+		if errNormalize != nil {
+			if !fableRequestHasMessages(sources[index].Path) {
+				written, sourceSHA256, errRaw := writeRawJSONLRecordWithHash(encoder, sources[index])
+				if errRaw != nil {
+					return jsonlSize, errRaw
+				}
+				sources[index].SHA256 = sourceSHA256
+				sources[index].JSONLBytes = written
+				nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
+				if errSize != nil {
+					return jsonlSize, errSize
+				}
+				jsonlSize = nextJSONLSize
+				continue
+			}
+			var formatErr *fableSourceFormatError
+			if errors.As(errNormalize, &formatErr) {
+				sources[index].QuarantineReason = errNormalize.Error()
+				if !dryRun {
+					if _, errQuarantine := s.quarantineSource(sources[index], errNormalize); errQuarantine != nil {
+						return jsonlSize, errQuarantine
+					}
+				}
+				continue
+			}
+			return jsonlSize, errNormalize
+		}
+		sources[index].SHA256 = hash
+		if record == nil {
+			continue
+		}
+		if record.streaming {
+			key := fableStreamingDedupKey(record)
+			if _, duplicate := seenStreaming[key]; duplicate {
+				continue
+			}
+			seenStreaming[key] = struct{}{}
+		}
+		written, _, errRecord := writeFableRecordValue(encoder, record, hash)
+		if errRecord != nil {
+			return jsonlSize, errRecord
+		}
+		sources[index].JSONLBytes = written
+		nextJSONLSize, errSize := addBatchJSONLSize(jsonlSize, written)
+		if errSize != nil {
+			return jsonlSize, errSize
+		}
+		jsonlSize = nextJSONLSize
+	}
+	return jsonlSize, nil
 }
 
 func addBatchJSONLSize(total, written int64) (int64, error) {

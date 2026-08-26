@@ -628,10 +628,7 @@ func prepareFableArchiveEntriesWithInvalid(sources []sourceLog) ([]fableArchiveE
 			// Streaming reconnects can leave a second source file containing the
 			// same completed response for the same conversation. Keep the first
 			// copy while retaining both source fingerprints for accounting.
-			requestBytes, _ := json.Marshal(record.requestBody)
-			key := record.SessionID + "\n" +
-				fmt.Sprintf("%x", sha256.Sum256(requestBytes)) + "\n" +
-				fmt.Sprintf("%x", sha256.Sum256(record.responseContent))
+			key := fableStreamingDedupKey(record)
 			if _, duplicate := seenStreaming[key]; duplicate {
 				continue
 			}
@@ -643,6 +640,13 @@ func prepareFableArchiveEntriesWithInvalid(sources []sourceLog) ([]fableArchiveE
 		return sources[entries[i].Index].Relative < sources[entries[j].Index].Relative
 	})
 	return entries, invalid, nil
+}
+
+func fableStreamingDedupKey(record *fableNormalizedRecord) string {
+	requestBytes, _ := json.Marshal(record.requestBody)
+	return record.SessionID + "\n" +
+		fmt.Sprintf("%x", sha256.Sum256(requestBytes)) + "\n" +
+		fmt.Sprintf("%x", sha256.Sum256(record.responseContent))
 }
 
 func hashSourceFile(path string) string {
