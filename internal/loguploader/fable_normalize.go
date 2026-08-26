@@ -178,7 +178,6 @@ func writeFableRecordValue(dst interface{ Write([]byte) (int, error) }, record *
 }
 
 type fableStructuredRecord struct {
-	Header   map[string]any `json:"header"`
 	Request  map[string]any `json:"request"`
 	Response map[string]any `json:"response"`
 	Metadata map[string]any `json:"metadata"`
@@ -238,7 +237,13 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 	}
 
 	return &fableStructuredRecord{
-		Header: map[string]any{
+		Request: map[string]any{
+			"info":    record.requestInfo,
+			"headers": record.headers,
+			"body":    requestBody,
+		},
+		Response: record.responseEnvelope,
+		Metadata: map[string]any{
 			"schema_version":             1,
 			"key_name":                   record.source.KeyName,
 			"source_file":                record.source.Relative,
@@ -252,14 +257,6 @@ func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredReco
 			"model":                      firstPresent(mapGet(requestBody, "model"), record.source.Model),
 			"model_name":                 firstPresent(mapGet(requestBody, "model"), record.source.Model),
 			"user_id":                    record.source.KeyName,
-		},
-		Request: map[string]any{
-			"info":    record.requestInfo,
-			"headers": record.headers,
-			"body":    requestBody,
-		},
-		Response: record.responseEnvelope,
-		Metadata: map[string]any{
 			"source": map[string]any{
 				"source_file":       record.source.Relative,
 				"source_size_bytes": record.source.Size,

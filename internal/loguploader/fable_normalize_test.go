@@ -67,15 +67,8 @@ Status: 200
 	if _, wrapped := decoded["raw_log"]; wrapped {
 		t.Fatalf("Fable record was wrapped in raw_log: %s", output.Bytes())
 	}
-	header, ok := decoded["header"].(map[string]any)
-	if !ok || header["message_id"] != "turn-1" || header["conversation_id"] != "thread-1" || header["session_id"] != "session-1" {
-		t.Fatalf("structured identity = %#v", decoded["header"])
-	}
-	if header["model"] != "claude-sonnet-5" || header["user_id"] != "alice" || header["think_type"] != "xhigh" {
-		t.Fatalf("structured header = %#v", header)
-	}
-	if header["timestamp"] != "2026-08-25T17:02:03Z" {
-		t.Fatalf("structured timestamp = %#v", header["timestamp"])
+	if _, wrapped := decoded["header"]; wrapped {
+		t.Fatalf("structured record still contains header: %s", output.Bytes())
 	}
 	request, ok := decoded["request"].(map[string]any)
 	if !ok || request["body"] == nil {
@@ -88,6 +81,15 @@ Status: 200
 	metadata, ok := decoded["metadata"].(map[string]any)
 	if !ok || metadata["source"] == nil || metadata["extra_info"] == nil {
 		t.Fatalf("structured metadata = %#v", decoded["metadata"])
+	}
+	if metadata["message_id"] != "turn-1" || metadata["conversation_id"] != "thread-1" || metadata["session_id"] != "session-1" {
+		t.Fatalf("structured identity = %#v", metadata)
+	}
+	if metadata["model"] != "claude-sonnet-5" || metadata["user_id"] != "alice" || metadata["think_type"] != "xhigh" {
+		t.Fatalf("structured metadata identity = %#v", metadata)
+	}
+	if metadata["timestamp"] != "2026-08-25T17:02:03Z" {
+		t.Fatalf("structured timestamp = %#v", metadata["timestamp"])
 	}
 }
 
@@ -308,18 +310,17 @@ func TestBuildArchiveKeepsEachFableRequestRecord(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
-		header, ok := record["header"].(map[string]any)
-		if !ok || header["session_id"] != "session-1" || header["model"] != "claude-fable-5" {
-			t.Fatalf("record %d identity = %#v", index, record)
+		if _, ok := record["header"]; ok {
+			t.Fatalf("record %d still contains header = %#v", index, record)
 		}
 		for _, field := range []string{
-			"header", "request", "response", "metadata",
+			"request", "response", "metadata",
 		} {
 			if _, ok := record[field]; !ok {
 				t.Fatalf("record %d is missing %q: %#v", index, field, record)
 			}
 		}
-		if metadata, ok := record["metadata"].(map[string]any); !ok || metadata["source"] == nil || metadata["extra_info"] == nil {
+		if metadata, ok := record["metadata"].(map[string]any); !ok || metadata["source"] == nil || metadata["extra_info"] == nil || metadata["session_id"] != "session-1" || metadata["model"] != "claude-fable-5" {
 			t.Fatalf("record %d metadata = %#v", index, record["metadata"])
 		}
 	}
