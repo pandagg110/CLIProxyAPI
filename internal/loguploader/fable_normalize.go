@@ -164,8 +164,114 @@ func fableRequestHasMessages(path string) bool {
 }
 
 func writeFableRecordValue(dst interface{ Write([]byte) (int, error) }, record *fableNormalizedRecord, hash string) (int64, string, error) {
-	common := fableToCommonRecord(record)
-	return writeCodexRecordValue(dst, common, hash)
+	structured := fableToStructuredRecord(record)
+	if structured == nil {
+		return 0, hash, nil
+	}
+	counter := &countingWriter{writer: dst}
+	encoder := json.NewEncoder(counter)
+	encoder.SetEscapeHTML(false)
+	if errEncode := encoder.Encode(structured); errEncode != nil {
+		return counter.count, hash, fmt.Errorf("encode structured fable record: %w", errEncode)
+	}
+	return counter.count, hash, nil
+}
+
+type fableStructuredRecord struct {
+	Header   map[string]any `json:"header"`
+	Request  map[string]any `json:"request"`
+	Response map[string]any `json:"response"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+func fableToStructuredRecord(record *fableNormalizedRecord) *fableStructuredRecord {
+	if record == nil {
+		return nil
+	}
+	requestBody := record.requestBody
+	clientMetadata, _ := requestBody["client_metadata"].(map[string]any)
+	if clientMetadata == nil {
+		clientMetadata = make(map[string]any)
+	}
+	turnMetadata := parseJSONObject(firstPresent(
+		caseInsensitiveGet(clientMetadata, "x-codex-turn-metadata"),
+		caseInsensitiveGetAny(record.headers, "x-codex-turn-metadata", "x-claude-turn-metadata"),
+		caseInsensitiveGet(requestBody, "turn_metadata"),
+	))
+
+	messageID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "turn_id"),
+		caseInsensitiveGet(turnMetadata, "turn_id"),
+		caseInsensitiveGetAny(record.headers, "x-client-request-id"),
+		record.responseID,
+	)
+	conversationID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "thread_id"),
+		caseInsensitiveGet(turnMetadata, "thread_id"),
+		caseInsensitiveGetAny(record.headers, "thread-id", "thread_id"),
+		caseInsensitiveGet(clientMetadata, "conversation_id"),
+	)
+	sessionID := firstPresent(
+		caseInsensitiveGet(clientMetadata, "session_id"),
+		caseInsensitiveGet(turnMetadata, "session_id"),
+		fableSessionIDFromHeadersAndBody(record.headers, requestBody),
+		record.SessionID,
+	)
+	timestamp := timestampToUTC(caseInsensitiveGet(record.requestInfo, "timestamp"))
+	if timestamp == nil || timestamp == "" {
+		timestamp = record.source.Timestamp.UTC().Format(time.RFC3339Nano)
+	}
+
+	tools, inputs := fableToolsAndInputs(requestBody)
+	toolResult := jsonValueOrEmptyArray(extractFableToolResults(record.responseContent))
+	if body, ok := record.responseEnvelope["body"].(map[string]any); ok {
+		if responseTools, exists := body["tools"]; exists {
+			toolResult = jsonValueOrEmptyArray(responseTools)
+		}
+	}
+
+	extraInfo := make(map[string]any)
+	mergeFableExtraInfo(extraInfo, turnMetadata)
+	mergeFableExtraInfo(extraInfo, clientMetadata)
+	if metadata, ok := requestBody["metadata"].(map[string]any); ok {
+		mergeFableExtraInfo(extraInfo, metadata)
+	}
+
+	return &fableStructuredRecord{
+		Header: map[string]any{
+			"schema_version":             1,
+			"key_name":                   record.source.KeyName,
+			"source_file":                record.source.Relative,
+			"source_size_bytes":          record.source.Size,
+			"sensitive_headers_redacted": true,
+			"message_id":                 fableStringValue(messageID),
+			"conversation_id":            fableStringValue(conversationID),
+			"session_id":                 fableStringValue(sessionID),
+			"think_type":                 fableThinkType(requestBody, record.ThinkingEffort),
+			"timestamp":                  fableStringValue(timestamp),
+			"model":                      firstPresent(mapGet(requestBody, "model"), record.source.Model),
+			"model_name":                 firstPresent(mapGet(requestBody, "model"), record.source.Model),
+			"user_id":                    record.source.KeyName,
+		},
+		Request: map[string]any{
+			"info":    record.requestInfo,
+			"headers": record.headers,
+			"body":    requestBody,
+		},
+		Response: record.responseEnvelope,
+		Metadata: map[string]any{
+			"source": map[string]any{
+				"source_file":       record.source.Relative,
+				"source_size_bytes": record.source.Size,
+				"timestamp":         record.source.Timestamp.Format(time.RFC3339Nano),
+				"provider":          record.source.Provider,
+			},
+			"extra_info":  extraInfo,
+			"tools":       jsonValueOrEmptyArray(tools),
+			"inputs":      jsonValueOrEmptyArray(inputs),
+			"tool_result": toolResult,
+		},
+	}
 }
 
 // fableToCommonRecord maps a Claude Messages snapshot into the same JSONL

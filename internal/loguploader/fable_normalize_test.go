@@ -67,25 +67,27 @@ Status: 200
 	if _, wrapped := decoded["raw_log"]; wrapped {
 		t.Fatalf("Fable record was wrapped in raw_log: %s", output.Bytes())
 	}
-	if decoded["message_id"] != "turn-1" || decoded["conversation_id"] != "thread-1" || decoded["session_id"] != "session-1" {
-		t.Fatalf("unified identity = %#v", decoded)
+	header, ok := decoded["header"].(map[string]any)
+	if !ok || header["message_id"] != "turn-1" || header["conversation_id"] != "thread-1" || header["session_id"] != "session-1" {
+		t.Fatalf("structured identity = %#v", decoded["header"])
 	}
-	if decoded["model_name"] != "claude-sonnet-5" || decoded["user_id"] != "alice" || decoded["think_type"] != "xhigh" {
-		t.Fatalf("unified metadata = %#v", decoded)
+	if header["model"] != "claude-sonnet-5" || header["user_id"] != "alice" || header["think_type"] != "xhigh" {
+		t.Fatalf("structured header = %#v", header)
 	}
-	if decoded["timestamp"] != "2026-08-25T17:02:03Z" {
-		t.Fatalf("unified timestamp = %#v", decoded["timestamp"])
+	if header["timestamp"] != "2026-08-25T17:02:03Z" {
+		t.Fatalf("structured timestamp = %#v", header["timestamp"])
 	}
-	var response []any
-	if err := json.Unmarshal([]byte(decoded["response"].(string)), &response); err != nil || len(response) != 2 {
-		t.Fatalf("unified response = %#v", decoded["response"])
+	request, ok := decoded["request"].(map[string]any)
+	if !ok || request["body"] == nil {
+		t.Fatalf("structured request = %#v", decoded["request"])
 	}
-	var metadata map[string]any
-	if err := json.Unmarshal([]byte(decoded["metadata"].(string)), &metadata); err != nil {
-		t.Fatalf("unified metadata JSON = %v", err)
+	response, ok := decoded["response"].(map[string]any)
+	if !ok || response["body"] == nil {
+		t.Fatalf("structured response = %#v", decoded["response"])
 	}
-	if metadata["response"] == nil || metadata["request"] == nil {
-		t.Fatalf("unified metadata missing request/response = %#v", metadata)
+	metadata, ok := decoded["metadata"].(map[string]any)
+	if !ok || metadata["source"] == nil || metadata["extra_info"] == nil {
+		t.Fatalf("structured metadata = %#v", decoded["metadata"])
 	}
 }
 
@@ -306,20 +308,19 @@ func TestBuildArchiveKeepsEachFableRequestRecord(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
-		if record["session_id"] != "session-1" || record["model_name"] != "claude-fable-5" {
+		header, ok := record["header"].(map[string]any)
+		if !ok || header["session_id"] != "session-1" || header["model"] != "claude-fable-5" {
 			t.Fatalf("record %d identity = %#v", index, record)
 		}
 		for _, field := range []string{
-			"message_id", "conversation_id", "session_id", "think_type",
-			"extra_info", "tools", "inputs", "response", "timestamp",
-			"model_name", "user_id", "tool_result", "metadata",
+			"header", "request", "response", "metadata",
 		} {
 			if _, ok := record[field]; !ok {
 				t.Fatalf("record %d is missing %q: %#v", index, field, record)
 			}
 		}
-		if record["user_id"] != "alice" || record["response"] != `[{"text":"ok","type":"text"}]` {
-			t.Fatalf("record %d fields = %#v", index, record)
+		if metadata, ok := record["metadata"].(map[string]any); !ok || metadata["source"] == nil || metadata["extra_info"] == nil {
+			t.Fatalf("record %d metadata = %#v", index, record["metadata"])
 		}
 	}
 	var expectedJSONLBytes int64
