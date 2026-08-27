@@ -114,7 +114,9 @@ func (s *Service) buildSupabaseEventPayload(prepared preparedHour) (supabaseEven
 			KeyName:     row.KeyName,
 			Provider:    row.Provider,
 			SourceCount: row.SourceCount,
-			SourceBytes: row.SourceBytes,
+			// Report the TOS pre-compression JSONL size as source_bytes so GPT
+			// and Claude share the field existing Supabase queries already read.
+			SourceBytes: jsonlBytes,
 			JSONLBytes:  &jsonlBytes,
 		})
 	}
@@ -126,8 +128,7 @@ func (s *Service) buildSupabaseEventPayload(prepared preparedHour) (supabaseEven
 		return supabaseEventPayload{}, fmt.Errorf("prepare Supabase event: exact usage does not match prepared sources")
 	}
 
-	sourceBytes, errSourceBytes := sumPreparedSourceBytes(prepared.Sources)
-	if errSourceBytes != nil {
+	if _, errSourceBytes := sumPreparedSourceBytes(prepared.Sources); errSourceBytes != nil {
 		return supabaseEventPayload{}, fmt.Errorf("prepare Supabase event: %w", errSourceBytes)
 	}
 	hourStart := prepared.Hour.In(s.location).Format(time.RFC3339)
@@ -146,7 +147,7 @@ func (s *Service) buildSupabaseEventPayload(prepared preparedHour) (supabaseEven
 		Timezone:        s.policy.Timezone,
 		UsageDate:       usageDate,
 		SourceCount:     int64(len(prepared.Sources)),
-		SourceBytes:     sourceBytes,
+		SourceBytes:     prepared.JSONLBytes,
 		JSONLBytes:      prepared.JSONLBytes,
 		CompressedBytes: prepared.CompressedBytes,
 		TestMode:        false,

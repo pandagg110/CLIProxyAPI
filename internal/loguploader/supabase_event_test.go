@@ -39,7 +39,7 @@ func TestPrepareSupabaseEventProducesStableSchemaV1Payload(t *testing.T) {
 	}
 
 	expectedRaw := fmt.Sprintf(
-		`{"schema_version":1,"event_id":%q,"target_id":%q,"object_key":"cliproxy-logs/2026/07/15/archive.jsonl.zst","archive_sha256":"%s","manifest_sha256":"%s","hour_start":"2026-07-15T01:00:00+08:00","timezone":"Asia/Shanghai","usage_date":"2026-07-15","source_count":3,"source_bytes":350,"jsonl_bytes":280,"compressed_bytes":180,"test_mode":false,"usage":[{"key_name":"alice","provider":"codex","source_count":1,"source_bytes":200,"jsonl_bytes":160},{"key_name":"panda","provider":"codex","source_count":2,"source_bytes":150,"jsonl_bytes":120}]}`,
+		`{"schema_version":1,"event_id":%q,"target_id":%q,"object_key":"cliproxy-logs/2026/07/15/archive.jsonl.zst","archive_sha256":"%s","manifest_sha256":"%s","hour_start":"2026-07-15T01:00:00+08:00","timezone":"Asia/Shanghai","usage_date":"2026-07-15","source_count":3,"source_bytes":280,"jsonl_bytes":280,"compressed_bytes":180,"test_mode":false,"usage":[{"key_name":"alice","provider":"codex","source_count":1,"source_bytes":160,"jsonl_bytes":160},{"key_name":"panda","provider":"codex","source_count":2,"source_bytes":120,"jsonl_bytes":120}]}`,
 		first.EventID(), "tos:"+service.target.ID, strings.Repeat("a", 64), strings.Repeat("b", 64),
 	)
 	if got := string(first.RawJSON()); got != expectedRaw {
@@ -50,6 +50,43 @@ func TestPrepareSupabaseEventProducesStableSchemaV1Payload(t *testing.T) {
 	mutated[0] = 'x'
 	if bytes.Equal(mutated, first.RawJSON()) {
 		t.Fatal("RawJSON returned mutable storage instead of a copy")
+	}
+}
+
+func TestPrepareSupabaseEventReportsJSONLSizeAsSourceBytesForGPTAndClaude(t *testing.T) {
+	t.Parallel()
+
+	service := mustSupabaseEventService(t)
+	for _, provider := range []string{providerCodex, providerClaude} {
+		prepared := validPreparedHourForSupabaseEvent(service)
+		prepared.Provider = provider
+		for index := range prepared.Usage {
+			prepared.Usage[index].Provider = provider
+		}
+		mustBindPreparedUsageIntegrity(service, &prepared)
+
+		event, errPrepare := service.prepareSupabaseEvent(prepared)
+		if errPrepare != nil {
+			t.Fatalf("prepare %s Supabase event: %v", provider, errPrepare)
+		}
+		var payload supabaseEventPayload
+		if errUnmarshal := json.Unmarshal(event.RawJSON(), &payload); errUnmarshal != nil {
+			t.Fatalf("decode %s payload: %v", provider, errUnmarshal)
+		}
+		if payload.SourceBytes != payload.JSONLBytes || payload.JSONLBytes != 280 {
+			t.Fatalf("%s batch source_bytes=%d jsonl_bytes=%d, want both 280", provider, payload.SourceBytes, payload.JSONLBytes)
+		}
+		if len(payload.Usage) != 2 {
+			t.Fatalf("%s usage rows = %d, want 2", provider, len(payload.Usage))
+		}
+		for _, row := range payload.Usage {
+			if row.Provider != provider {
+				t.Fatalf("%s usage provider = %q", provider, row.Provider)
+			}
+			if row.JSONLBytes == nil || row.SourceBytes != *row.JSONLBytes {
+				t.Fatalf("%s usage %q source_bytes=%d jsonl_bytes=%v, want equal JSONL size", provider, row.KeyName, row.SourceBytes, row.JSONLBytes)
+			}
+		}
 	}
 }
 
