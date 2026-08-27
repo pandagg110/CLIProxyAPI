@@ -252,7 +252,10 @@ func (s *Service) preflightSupabaseHistory(state uploadState, ledger supabaseHis
 }
 
 func (s *Service) buildSupabaseHistoryPayload(record auditRecord, hour uploadedHour, object uploadedObject) (supabaseEventPayload, error) {
-	usage, errUsage := buildSupabaseHistoryUsage(record)
+	filled := record
+	filled.KeyNames = cloneAuditKeyNames(record.KeyNames)
+	fillAuditJSONLBytes(&filled)
+	usage, errUsage := buildSupabaseHistoryUsage(filled)
 	if errUsage != nil {
 		return supabaseEventPayload{}, errUsage
 	}
@@ -271,10 +274,21 @@ func (s *Service) buildSupabaseHistoryPayload(record auditRecord, hour uploadedH
 		JSONLBytes:      record.JSONLBytes,
 		CompressedBytes: record.CompressedBytes,
 		TestMode:        false,
-		UsagePrecision:  supabaseUsagePrecisionBatchOnly,
 		Usage:           usage,
 	}
-	payload.EventID = supabaseHistoryEventID(payload)
+	provider := strings.TrimSpace(record.Provider)
+	if provider == "" {
+		provider = providerCodex
+	}
+	if auditUsageHasExactJSONL(filled, usage) && usageMatchesHourProvider(usage, provider) {
+		payload.EventID = supabaseEventID(payload, provider)
+	} else {
+		for index := range payload.Usage {
+			payload.Usage[index].JSONLBytes = nil
+		}
+		payload.UsagePrecision = supabaseUsagePrecisionBatchOnly
+		payload.EventID = supabaseHistoryEventID(payload)
+	}
 	if errValidate := validateSupabaseEventPayload(payload); errValidate != nil {
 		return supabaseEventPayload{}, errValidate
 	}
@@ -291,12 +305,17 @@ func buildSupabaseHistoryUsage(record auditRecord) ([]supabaseEventUsage, error)
 	for keyName, key := range record.KeyNames {
 		if record.Provider != "" {
 			pair := usageKey{keyName: keyName, provider: record.Provider}
-			usageByKey[pair] = supabaseEventUsage{
+			row := supabaseEventUsage{
 				KeyName:     keyName,
 				Provider:    record.Provider,
 				SourceCount: int64(key.SourceCount),
 				SourceBytes: key.SourceBytes,
 			}
+			if key.JSONLBytes > 0 || record.JSONLBytes > 0 {
+				jsonlBytes := key.JSONLBytes
+				row.JSONLBytes = &jsonlBytes
+			}
+			usageByKey[pair] = row
 			continue
 		}
 		for modelName, model := range key.Models {
@@ -314,6 +333,15 @@ func buildSupabaseHistoryUsage(record auditRecord) ([]supabaseEventUsage, error)
 			if errAdd != nil {
 				return nil, fmt.Errorf("history usage source_bytes total overflow")
 			}
+			jsonlBytes := int64(0)
+			if row.JSONLBytes != nil {
+				jsonlBytes = *row.JSONLBytes
+			}
+			jsonlBytes, errAdd = addSafeJSONInteger(jsonlBytes, model.JSONLBytes)
+			if errAdd != nil {
+				return nil, fmt.Errorf("history usage jsonl_bytes total overflow")
+			}
+			row.JSONLBytes = &jsonlBytes
 			usageByKey[pair] = row
 		}
 	}

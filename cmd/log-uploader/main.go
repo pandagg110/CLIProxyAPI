@@ -35,6 +35,7 @@ type cliService interface {
 	RunOnce(context.Context, bool) error
 	MigrateLegacyState(context.Context, string, string, bool) error
 	SyncSupabaseHistory(context.Context, bool) (loguploader.SupabaseHistorySummary, error)
+	SyncSupabaseJSONL(context.Context, bool) (loguploader.SupabaseJSONLSyncSummary, error)
 }
 
 type cliDependencies struct {
@@ -64,6 +65,7 @@ func runCLI(args []string, stdout io.Writer, deps cliDependencies) error {
 	var once bool
 	var dryRun bool
 	var syncSupabaseHistory bool
+	var syncSupabaseJSONL bool
 	var migrateManifest string
 	var migrateArchives string
 	var migrateTrustLocal bool
@@ -73,6 +75,7 @@ func runCLI(args []string, stdout io.Writer, deps cliDependencies) error {
 	flags.BoolVar(&once, "once", false, "Process ready logs once and exit")
 	flags.BoolVar(&dryRun, "dry-run", false, "Build local archives without uploading, recording state, or deleting source logs")
 	flags.BoolVar(&syncSupabaseHistory, "sync-supabase-history", false, "Upload successful local audit history to Supabase and exit")
+	flags.BoolVar(&syncSupabaseJSONL, "sync-supabase-jsonl", false, "Backfill exact per-key JSONL sizes for already uploaded archives to Supabase and exit")
 	flags.StringVar(&migrateManifest, "migrate-legacy-manifest", "", "Verified JSONL manifest used to migrate an untrusted legacy state")
 	flags.StringVar(&migrateArchives, "migrate-legacy-archives", "", "Root containing verified local archives for legacy state migration")
 	flags.BoolVar(&migrateTrustLocal, "migrate-legacy-trust-local", false, "Migrate using verified local archives and upload audit when HeadObject permission is unavailable")
@@ -81,8 +84,11 @@ func runCLI(args []string, stdout io.Writer, deps cliDependencies) error {
 	}
 
 	migrationRequested := migrateManifest != "" || migrateArchives != "" || migrateTrustLocal
-	if syncSupabaseHistory && (once || migrationRequested) {
-		return fmt.Errorf("--sync-supabase-history cannot be combined with --once or legacy migration flags")
+	if syncSupabaseHistory && syncSupabaseJSONL {
+		return fmt.Errorf("--sync-supabase-history cannot be combined with --sync-supabase-jsonl")
+	}
+	if (syncSupabaseHistory || syncSupabaseJSONL) && (once || migrationRequested) {
+		return fmt.Errorf("Supabase sync flags cannot be combined with --once or legacy migration flags")
 	}
 	if migrationRequested {
 		if migrateManifest == "" || migrateArchives == "" {
@@ -105,12 +111,12 @@ func runCLI(args []string, stdout io.Writer, deps cliDependencies) error {
 	if errConfig != nil {
 		return errConfig
 	}
-	if !syncSupabaseHistory && !cfg.Upload.Enabled && !dryRun {
+	if !syncSupabaseHistory && !syncSupabaseJSONL && !cfg.Upload.Enabled && !dryRun {
 		return fmt.Errorf("upload is disabled; use --dry-run for local conversion testing")
 	}
 
 	var uploader loguploader.ObjectUploader
-	if !syncSupabaseHistory && cfg.Upload.Enabled && !dryRun {
+	if !syncSupabaseHistory && !syncSupabaseJSONL && cfg.Upload.Enabled && !dryRun {
 		tosUploader, errUploader := deps.newTOSUploader(cfg.Upload)
 		if errUploader != nil {
 			return errUploader
@@ -133,6 +139,18 @@ func runCLI(args []string, stdout io.Writer, deps cliDependencies) error {
 		encoder.SetEscapeHTML(false)
 		if errEncode := encoder.Encode(summary); errEncode != nil {
 			return fmt.Errorf("write Supabase history summary: %w", errEncode)
+		}
+		return nil
+	}
+	if syncSupabaseJSONL {
+		summary, errSync := service.SyncSupabaseJSONL(ctx, dryRun)
+		if errSync != nil {
+			return errSync
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetEscapeHTML(false)
+		if errEncode := encoder.Encode(summary); errEncode != nil {
+			return fmt.Errorf("write Supabase JSONL sync summary: %w", errEncode)
 		}
 		return nil
 	}

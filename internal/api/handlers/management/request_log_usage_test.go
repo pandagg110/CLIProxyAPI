@@ -604,6 +604,28 @@ func TestGetRequestLogUsageJSONLBytes(t *testing.T) {
 	if response.Days[0].SourceBytes != 1600 || response.Days[0].JSONLBytes != 1350 {
 		t.Fatalf("day: source=%d jsonl=%d, want 1600/1350", response.Days[0].SourceBytes, response.Days[0].JSONLBytes)
 	}
+	if len(response.Days[0].Providers) != 2 || response.Days[0].Providers[0].JSONLBytes != 550 || response.Days[0].Providers[1].JSONLBytes != 800 {
+		t.Fatalf("day providers jsonl = %+v", response.Days[0].Providers)
+	}
+	if len(response.Days[0].Keys) != 2 {
+		t.Fatalf("day keys = %+v", response.Days[0].Keys)
+	}
+	aliceDay := response.Days[0].Keys[0]
+	bobDay := response.Days[0].Keys[1]
+	if aliceDay.KeyName != "alice" || aliceDay.JSONLBytes != 1150 {
+		t.Fatalf("alice day jsonl = %+v, want 1150", aliceDay)
+	}
+	if bobDay.KeyName != "bob" || bobDay.JSONLBytes != 200 {
+		t.Fatalf("bob day jsonl = %+v, want 200", bobDay)
+	}
+	if len(aliceDay.Providers) != 2 || aliceDay.Providers[0].JSONLBytes != 350 || aliceDay.Providers[1].JSONLBytes != 800 {
+		t.Fatalf("alice day providers jsonl = %+v", aliceDay.Providers)
+	}
+	aliceKey := requestLogUsageKeyByName(t, response.Keys, "alice")
+	bobKey := requestLogUsageKeyByName(t, response.Keys, "bob")
+	if aliceKey.JSONLBytes != 1150 || bobKey.JSONLBytes != 200 {
+		t.Fatalf("key jsonl alice=%d bob=%d", aliceKey.JSONLBytes, bobKey.JSONLBytes)
+	}
 
 	// Hours
 	if len(response.Hours) != 3 {
@@ -628,6 +650,98 @@ func TestGetRequestLogUsageJSONLBytes(t *testing.T) {
 	}
 }
 
+func TestGetRequestLogUsageApportionsLegacyPerKeyJSONLBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	mustWriteRequestLogUsageFile(t, filepath.Join(root, "log-uploader.yaml"), []byte("logs-root: logs/keys\nwork-dir: work\ntimezone: Asia/Shanghai\n"))
+
+	hour := time.Date(2026, 8, 27, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	lines := []string{
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:     "uploaded",
+			Hour:       hour,
+			Provider:   "fable5",
+			JSONLBytes: 1000,
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithModel(2, 750, "claude-fable-5", 2, 750),
+				"bob":   requestLogUsageAuditKeyWithModel(1, 250, "claude-fable-5", 1, 250),
+			},
+		}),
+	}
+	mustWriteRequestLogUsageFile(t, filepath.Join(workDir, "audit.jsonl"), []byte(strings.Join(lines, "\n")+"\n"))
+
+	handler := NewHandler(&config.Config{AuthDir: filepath.Join(root, "auths")}, filepath.Join(root, "config.yaml"), nil)
+	response, _ := performRequestLogUsage(t, handler)
+
+	if response.Totals.JSONLBytes != 1000 || response.Days[0].JSONLBytes != 1000 {
+		t.Fatalf("totals/day jsonl = %d / %+v", response.Totals.JSONLBytes, response.Days)
+	}
+	if len(response.Days[0].Keys) != 2 {
+		t.Fatalf("day keys = %+v", response.Days[0].Keys)
+	}
+	alice := response.Days[0].Keys[0]
+	bob := response.Days[0].Keys[1]
+	if alice.KeyName != "alice" || alice.JSONLBytes != 750 {
+		t.Fatalf("alice apportioned jsonl = %+v, want 750", alice)
+	}
+	if bob.KeyName != "bob" || bob.JSONLBytes != 250 {
+		t.Fatalf("bob apportioned jsonl = %+v, want 250", bob)
+	}
+	if alice.JSONLBytes+bob.JSONLBytes != response.Days[0].JSONLBytes {
+		t.Fatalf("per-key jsonl %d + %d != day jsonl %d", alice.JSONLBytes, bob.JSONLBytes, response.Days[0].JSONLBytes)
+	}
+}
+
+func TestGetRequestLogUsageKeepsExactPerKeyJSONLBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	mustWriteRequestLogUsageFile(t, filepath.Join(root, "log-uploader.yaml"), []byte("logs-root: logs/keys\nwork-dir: work\ntimezone: Asia/Shanghai\n"))
+
+	hour := time.Date(2026, 8, 27, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	lines := []string{
+		marshalRequestLogUsageAudit(t, requestLogUsageAuditRecord{
+			Status:     "uploaded",
+			Hour:       hour,
+			Provider:   "fable5",
+			JSONLBytes: 400,
+			KeyNames: map[string]requestLogUsageAuditKey{
+				"alice": requestLogUsageAuditKeyWithJSONL(2, 800, 100, "claude-fable-5", 2, 800, 100),
+				"bob":   requestLogUsageAuditKeyWithJSONL(1, 200, 300, "claude-fable-5", 1, 200, 300),
+			},
+		}),
+	}
+	mustWriteRequestLogUsageFile(t, filepath.Join(workDir, "audit.jsonl"), []byte(strings.Join(lines, "\n")+"\n"))
+
+	handler := NewHandler(&config.Config{AuthDir: filepath.Join(root, "auths")}, filepath.Join(root, "config.yaml"), nil)
+	response, _ := performRequestLogUsage(t, handler)
+
+	alice := response.Days[0].Keys[0]
+	bob := response.Days[0].Keys[1]
+	if alice.KeyName != "alice" || alice.JSONLBytes != 100 {
+		t.Fatalf("alice exact jsonl = %+v, want 100 (not source-proportional 320)", alice)
+	}
+	if bob.KeyName != "bob" || bob.JSONLBytes != 300 {
+		t.Fatalf("bob exact jsonl = %+v, want 300", bob)
+	}
+	if requestLogUsageKeyByName(t, response.Keys, "alice").JSONLBytes != 100 {
+		t.Fatalf("alice key card jsonl = %d, want 100", requestLogUsageKeyByName(t, response.Keys, "alice").JSONLBytes)
+	}
+}
+
+func TestRequestLogUsageProportionalShare(t *testing.T) {
+	if got := requestLogUsageProportionalShare(1000, 750, 1000); got != 750 {
+		t.Fatalf("share = %d, want 750", got)
+	}
+	if got := requestLogUsageProportionalShare(24<<30, 15<<30, 32<<30); got <= 0 || got >= 24<<30 {
+		t.Fatalf("large share = %d, want in (0, 24GiB)", got)
+	}
+	if got := requestLogUsageProportionalShare(0, 10, 10); got != 0 {
+		t.Fatalf("zero total share = %d, want 0", got)
+	}
+}
+
 func performRequestLogUsage(t *testing.T, handler *Handler) (requestLogUsageResponse, string) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -648,11 +762,16 @@ func performRequestLogUsage(t *testing.T, handler *Handler) (requestLogUsageResp
 }
 
 func requestLogUsageAuditKeyWithModel(sourceCount, sourceBytes int64, model string, modelCount, modelBytes int64) requestLogUsageAuditKey {
+	return requestLogUsageAuditKeyWithJSONL(sourceCount, sourceBytes, 0, model, modelCount, modelBytes, 0)
+}
+
+func requestLogUsageAuditKeyWithJSONL(sourceCount, sourceBytes, jsonlBytes int64, model string, modelCount, modelBytes, modelJSONL int64) requestLogUsageAuditKey {
 	return requestLogUsageAuditKey{
 		SourceCount: sourceCount,
 		SourceBytes: sourceBytes,
+		JSONLBytes:  jsonlBytes,
 		Models: map[string]requestLogUsageAuditModel{
-			model: {SourceCount: modelCount, SourceBytes: modelBytes},
+			model: {SourceCount: modelCount, SourceBytes: modelBytes, JSONLBytes: modelJSONL},
 		},
 	}
 }

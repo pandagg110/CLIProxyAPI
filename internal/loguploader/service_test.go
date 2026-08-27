@@ -382,6 +382,9 @@ func TestRunOnceDryRunCreatesZstdJSONLAndAuditWithoutDeleting(t *testing.T) {
 	if audit[0].JSONLBytes != int64(len(decompressed)) {
 		t.Errorf("audit JSONL bytes = %d, decompressed bytes = %d", audit[0].JSONLBytes, len(decompressed))
 	}
+	if pandaSummary.JSONLBytes+aliceSummary.JSONLBytes != audit[0].JSONLBytes {
+		t.Errorf("per-key jsonl %d + %d != batch jsonl %d", pandaSummary.JSONLBytes, aliceSummary.JSONLBytes, audit[0].JSONLBytes)
+	}
 	if audit[0].CompressedBytes <= 0 || audit[0].DeletedSources != 0 {
 		t.Errorf("unexpected compressed/deleted counts: %+v", audit[0])
 	}

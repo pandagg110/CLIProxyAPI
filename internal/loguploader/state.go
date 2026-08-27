@@ -44,15 +44,16 @@ func canonicalUploadTarget(cfg UploadConfig) (uploadTarget, error) {
 
 func (s *Service) newUploadState() uploadState {
 	return uploadState{
-		SchemaVersion:   uploadStateSchemaVersion,
-		Target:          s.target,
-		Policy:          s.policy,
-		Uploaded:        make(map[string]uploadedSource),
-		Objects:         make(map[string]uploadedObject),
-		Hours:           make(map[string]uploadedHour),
-		PreparedHours:   make(map[string]preparedHour),
-		SupabaseOutbox:  newSupabaseOutboxState(s),
-		SupabaseHistory: make(map[string]supabaseHistoryCheckpoint),
+		SchemaVersion:     uploadStateSchemaVersion,
+		Target:            s.target,
+		Policy:            s.policy,
+		Uploaded:          make(map[string]uploadedSource),
+		Objects:           make(map[string]uploadedObject),
+		Hours:             make(map[string]uploadedHour),
+		PreparedHours:     make(map[string]preparedHour),
+		SupabaseOutbox:    newSupabaseOutboxState(s),
+		SupabaseHistory:   make(map[string]supabaseHistoryCheckpoint),
+		SupabaseJSONLSync: make(map[string]supabaseHistoryCheckpoint),
 	}
 }
 
@@ -67,6 +68,7 @@ func (s *Service) validateUploadState(state *uploadState) error {
 		state.SchemaVersion = uploadStateSchemaVersion
 		state.SupabaseOutbox = newSupabaseOutboxState(s)
 		state.SupabaseHistory = make(map[string]supabaseHistoryCheckpoint)
+		state.SupabaseJSONLSync = make(map[string]supabaseHistoryCheckpoint)
 		state.dirty = true
 	}
 	if state.SchemaVersion != uploadStateSchemaVersion {
@@ -74,6 +76,9 @@ func (s *Service) validateUploadState(state *uploadState) error {
 	}
 	if state.SupabaseHistory == nil {
 		state.SupabaseHistory = make(map[string]supabaseHistoryCheckpoint)
+	}
+	if state.SupabaseJSONLSync == nil {
+		state.SupabaseJSONLSync = make(map[string]supabaseHistoryCheckpoint)
 	}
 	if state.Target != s.target {
 		return fmt.Errorf("upload state target mismatch: state target %s does not match configured target %s", state.Target.ID, s.target.ID)

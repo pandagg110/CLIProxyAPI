@@ -356,7 +356,7 @@
     var subtitle = element(
       'p',
       'cpa-rlu-subtitle',
-      '统计已上传的原始请求日志，并同时显示本地尚存数据。'
+      '统计已上传的归一化 JSONL 体积；本地尚存仍显示原始 .log 大小。'
     );
     heading.appendChild(title);
     heading.appendChild(subtitle);
@@ -475,6 +475,13 @@
     return scaled.toFixed(digits) + ' ' + units[index];
   }
 
+  function usageBytes(entry) {
+    if (!entry || typeof entry !== 'object') {
+      return 0;
+    }
+    return numberValue(entry.jsonl_bytes);
+  }
+
   function dateTime(value, timezone) {
     if (!value) {
       return '—';
@@ -532,7 +539,7 @@
           ' · ' +
           integer(entry.source_count) +
           ' 条 · ' +
-          bytes(entry.source_bytes)
+          bytes(usageBytes(entry))
         );
       })
       .join(' | ');
@@ -542,7 +549,7 @@
     return arrayValue(models)
       .map(function (model) {
         var name = String(model && (model.model || model.name) ? model.model || model.name : 'unknown');
-        return name + ' · ' + integer(model && model.source_count) + ' 条 · ' + bytes(model && model.source_bytes);
+        return name + ' · ' + integer(model && model.source_count) + ' 条 · ' + bytes(usageBytes(model));
       })
       .join(' | ');
   }
@@ -559,6 +566,7 @@
           provider: hour.provider,
           source_count: entry.source_count,
           source_bytes: entry.source_bytes,
+          jsonl_bytes: entry.jsonl_bytes,
           models: entry.models,
         });
       });
@@ -577,6 +585,7 @@
           date: day.date,
           source_count: entry.source_count,
           source_bytes: entry.source_bytes,
+          jsonl_bytes: entry.jsonl_bytes,
           providers: entry.providers,
           models: entry.models,
         });
@@ -606,7 +615,7 @@
       row.appendChild(cell);
       return;
     }
-    cell.appendChild(element('span', 'cpa-rlu-daily-value', bytes(entry.source_bytes)));
+    cell.appendChild(element('span', 'cpa-rlu-daily-value', bytes(usageBytes(entry))));
     cell.appendChild(element('span', 'cpa-rlu-daily-count', integer(entry.source_count) + ' 条'));
     providerEntries(entry.providers).forEach(function (providerEntry) {
       var line = element(
@@ -614,7 +623,7 @@
         'cpa-rlu-daily-provider',
         providerLabel(providerEntry.provider) +
           ' ' +
-          bytes(providerEntry.source_bytes) +
+          bytes(usageBytes(providerEntry)) +
           ' / ' +
           integer(providerEntry.source_count) +
           ' 条'
@@ -741,7 +750,7 @@
         return keyName.indexOf(needle) >= 0 || displayName.indexOf(needle) >= 0;
       })
       .sort(function (left, right) {
-        var byteDiff = numberValue(right.source_bytes) - numberValue(left.source_bytes);
+        var byteDiff = usageBytes(right) - usageBytes(left);
         if (byteDiff !== 0) {
           return byteDiff;
         }
@@ -787,7 +796,7 @@
       element(
         'p',
         'cpa-rlu-section-help',
-        '单元格显示原始大小 / 日志条数；日期与人员列均支持分页'
+        '单元格显示归一化 JSONL 大小 / 日志条数（压缩前实际上传体积）；日期与人员列均支持分页'
       )
     );
     section.appendChild(sectionHead);
@@ -898,7 +907,7 @@
         var row = element('tr');
         row.appendChild(element('td', '', String((day && day.date) || '—')));
         row.appendChild(element('td', '', integer(day.source_count)));
-        row.appendChild(element('td', '', bytes(day.jsonl_bytes || day.source_bytes)));
+        row.appendChild(element('td', '', bytes(usageBytes(day))));
         row.appendChild(element('td', '', providerText(day.providers) || '—'));
         row.appendChild(element('td', '', modelText(day.models) || '—'));
         body.appendChild(row);
@@ -916,7 +925,7 @@
     var table = element('table', 'cpa-rlu-table');
     var head = element('thead');
     var headerRow = element('tr');
-    ['小时', '来源', '日志数', '原始大小', '模型'].forEach(function (label) {
+    ['小时', '来源', '日志数', '归档大小', '模型'].forEach(function (label) {
       headerRow.appendChild(element('th', '', label));
     });
     head.appendChild(headerRow);
@@ -927,7 +936,7 @@
       row.appendChild(element('td', '', dateTime(hour.hour, timezone)));
       row.appendChild(element('td', '', hour.provider ? providerLabel(hour.provider) : '—'));
       row.appendChild(element('td', '', integer(hour.source_count)));
-      row.appendChild(element('td', '', bytes(hour.source_bytes)));
+      row.appendChild(element('td', '', bytes(usageBytes(hour))));
       row.appendChild(element('td', '', modelText(hour.models) || '—'));
       body.appendChild(row);
     });
@@ -961,7 +970,7 @@
     card.appendChild(cardHead);
 
     var metrics = element('div', 'cpa-rlu-metrics');
-    metrics.appendChild(metric('原始日志大小', bytes(entry && entry.source_bytes)));
+    metrics.appendChild(metric('已上传 JSONL', bytes(usageBytes(entry))));
     metrics.appendChild(metric('已上传日志数', integer(entry && entry.source_count)));
     metrics.appendChild(
       metric(
@@ -989,7 +998,7 @@
             ' · ' +
             integer(providerEntry.source_count) +
             ' 条 · ' +
-            bytes(providerEntry.source_bytes)
+            bytes(usageBytes(providerEntry))
         );
         chip.dataset.provider = String(providerEntry.provider || '');
         providerList.appendChild(chip);
@@ -1028,13 +1037,13 @@
     var timezone = String((payload && payload.timezone) || '');
 
     var summary = element('div', 'cpa-rlu-summary');
-    summary.appendChild(summaryCard('已上传归档日志', bytes(totals.jsonl_bytes || totals.source_bytes)));
+    summary.appendChild(summaryCard('已上传归档日志', bytes(usageBytes(totals))));
     summary.appendChild(summaryCard('已上传日志数', integer(totals.source_count)));
     providerEntries(payload && payload.providers).forEach(function (entry) {
       summary.appendChild(
         summaryCard(
           providerLabel(entry.provider) + ' 日志',
-          bytes(entry.jsonl_bytes || entry.source_bytes) + ' / ' + integer(entry.source_count) + ' 条'
+          bytes(usageBytes(entry)) + ' / ' + integer(entry.source_count) + ' 条'
         )
       );
     });
@@ -1064,7 +1073,7 @@
     var keySection = element('section', 'cpa-rlu-section-block');
     var keyHead = element('div', 'cpa-rlu-section-head');
     keyHead.appendChild(element('h3', 'cpa-rlu-section-title', '每人 / Key 用量'));
-    keyHead.appendChild(element('p', 'cpa-rlu-section-help', '按已上传原始大小降序；支持搜索与分页'));
+    keyHead.appendChild(element('p', 'cpa-rlu-section-help', '按已上传归一化 JSONL 大小降序；支持搜索与分页'));
     keySection.appendChild(keyHead);
 
     var filteredKeys = sortedKeys(keys, viewState.keyFilter);

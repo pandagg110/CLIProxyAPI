@@ -41,15 +41,16 @@ type Service struct {
 }
 
 type uploadState struct {
-	SchemaVersion   int                                  `json:"schema_version"`
-	Target          uploadTarget                         `json:"target"`
-	Policy          uploadPolicy                         `json:"policy"`
-	Uploaded        map[string]uploadedSource            `json:"uploaded"`
-	Objects         map[string]uploadedObject            `json:"objects"`
-	Hours           map[string]uploadedHour              `json:"hours"`
-	PreparedHours   map[string]preparedHour              `json:"prepared_hours"`
-	SupabaseOutbox  supabaseOutboxState                  `json:"supabase_outbox"`
-	SupabaseHistory map[string]supabaseHistoryCheckpoint `json:"supabase_history,omitempty"`
+	SchemaVersion     int                                  `json:"schema_version"`
+	Target            uploadTarget                         `json:"target"`
+	Policy            uploadPolicy                         `json:"policy"`
+	Uploaded          map[string]uploadedSource            `json:"uploaded"`
+	Objects           map[string]uploadedObject            `json:"objects"`
+	Hours             map[string]uploadedHour              `json:"hours"`
+	PreparedHours     map[string]preparedHour              `json:"prepared_hours"`
+	SupabaseOutbox    supabaseOutboxState                  `json:"supabase_outbox"`
+	SupabaseHistory   map[string]supabaseHistoryCheckpoint `json:"supabase_history,omitempty"`
+	SupabaseJSONLSync map[string]supabaseHistoryCheckpoint `json:"supabase_jsonl_sync,omitempty"`
 	// SessionGate tracks hold metadata for the upload session filter (optional).
 	SessionGate *sessionGateStore `json:"session_gate,omitempty"`
 	dirty       bool              `json:"-"`
@@ -140,12 +141,14 @@ type preparedSource struct {
 type auditKeyNameSummary struct {
 	SourceCount int                          `json:"source_count"`
 	SourceBytes int64                        `json:"source_bytes"`
+	JSONLBytes  int64                        `json:"jsonl_bytes,omitempty"`
 	Models      map[string]auditModelSummary `json:"models,omitempty"`
 }
 
 type auditModelSummary struct {
 	SourceCount int   `json:"source_count"`
 	SourceBytes int64 `json:"source_bytes"`
+	JSONLBytes  int64 `json:"jsonl_bytes,omitempty"`
 }
 
 type auditRecord struct {
@@ -549,12 +552,14 @@ func summarizeAuditSources(record *auditRecord, sources []sourceLog) {
 		keySummary := record.KeyNames[source.KeyName]
 		keySummary.SourceCount++
 		keySummary.SourceBytes += source.Size
+		keySummary.JSONLBytes += source.JSONLBytes
 		if keySummary.Models == nil {
 			keySummary.Models = make(map[string]auditModelSummary)
 		}
 		modelSummary := keySummary.Models[source.Model]
 		modelSummary.SourceCount++
 		modelSummary.SourceBytes += source.Size
+		modelSummary.JSONLBytes += source.JSONLBytes
 		keySummary.Models[source.Model] = modelSummary
 		record.KeyNames[source.KeyName] = keySummary
 	}

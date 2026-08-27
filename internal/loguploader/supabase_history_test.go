@@ -600,6 +600,9 @@ func TestPreflightSupabaseHistoryClassifiesLegacyModelsByProvider(t *testing.T) 
 		{KeyName: "alice", Provider: providerClaude, SourceCount: 2, SourceBytes: 200},
 		{KeyName: "alice", Provider: providerGrok, SourceCount: 3, SourceBytes: 300},
 	}
+	if payload.UsagePrecision != supabaseUsagePrecisionBatchOnly {
+		t.Fatalf("legacy mixed-provider payload must stay batch_only: %#v", payload)
+	}
 	if len(payload.Usage) != len(wantUsage) {
 		t.Fatalf("legacy usage rows = %#v", payload.Usage)
 	}
@@ -1244,8 +1247,13 @@ func historyAcknowledgingDoer(t *testing.T, requests *int, status string) httpDo
 		if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil {
 			t.Fatalf("decode history payload: %v", errUnmarshal)
 		}
-		if payload.UsagePrecision != supabaseUsagePrecisionBatchOnly || payload.Usage[0].JSONLBytes != nil {
-			t.Fatalf("history payload precision = %#v", payload)
+		if payload.JSONLBytes > 0 {
+			if len(payload.Usage) == 0 || payload.Usage[0].JSONLBytes == nil {
+				t.Fatalf("history payload missing per-key jsonl: %#v", payload)
+			}
+			if payload.UsagePrecision == supabaseUsagePrecisionBatchOnly {
+				t.Fatalf("history payload with jsonl used batch_only: %#v", payload)
+			}
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,

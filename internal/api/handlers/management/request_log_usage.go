@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,11 +48,13 @@ type requestLogUsageSettings struct {
 type requestLogUsageAuditModel struct {
 	SourceCount int64 `json:"source_count"`
 	SourceBytes int64 `json:"source_bytes"`
+	JSONLBytes  int64 `json:"jsonl_bytes"`
 }
 
 type requestLogUsageAuditKey struct {
 	SourceCount int64                                `json:"source_count"`
 	SourceBytes int64                                `json:"source_bytes"`
+	JSONLBytes  int64                                `json:"jsonl_bytes"`
 	Models      map[string]requestLogUsageAuditModel `json:"models"`
 }
 
@@ -77,12 +80,14 @@ type requestLogUsageModel struct {
 	Model       string `json:"model"`
 	SourceCount int64  `json:"source_count"`
 	SourceBytes int64  `json:"source_bytes"`
+	JSONLBytes  int64  `json:"jsonl_bytes"`
 }
 
 type requestLogUsageProviderUsage struct {
 	Provider    string `json:"provider"`
 	SourceCount int64  `json:"source_count"`
 	SourceBytes int64  `json:"source_bytes"`
+	JSONLBytes  int64  `json:"jsonl_bytes"`
 }
 
 type requestLogUsageKey struct {
@@ -91,6 +96,7 @@ type requestLogUsageKey struct {
 	Configured   bool                           `json:"configured"`
 	SourceCount  int64                          `json:"source_count"`
 	SourceBytes  int64                          `json:"source_bytes"`
+	JSONLBytes   int64                          `json:"jsonl_bytes"`
 	PendingCount int64                          `json:"pending_count"`
 	PendingBytes int64                          `json:"pending_bytes"`
 	BatchCount   int                            `json:"batch_count"`
@@ -104,6 +110,7 @@ type requestLogUsageHourKey struct {
 	KeyName     string                 `json:"key_name"`
 	SourceCount int64                  `json:"source_count"`
 	SourceBytes int64                  `json:"source_bytes"`
+	JSONLBytes  int64                  `json:"jsonl_bytes"`
 	Models      []requestLogUsageModel `json:"models"`
 }
 
@@ -120,6 +127,7 @@ type requestLogUsageDayKey struct {
 	KeyName     string                         `json:"key_name"`
 	SourceCount int64                          `json:"source_count"`
 	SourceBytes int64                          `json:"source_bytes"`
+	JSONLBytes  int64                          `json:"jsonl_bytes"`
 	Providers   []requestLogUsageProviderUsage `json:"providers"`
 	Models      []requestLogUsageModel         `json:"models"`
 }
@@ -168,6 +176,7 @@ type requestLogUsageAggregate struct {
 	displayName  string
 	sourceCount  int64
 	sourceBytes  int64
+	jsonlBytes   int64
 	pendingCount int64
 	pendingBytes int64
 	batchCount   int
@@ -503,10 +512,15 @@ func readRequestLogUsageAudit(path, label string, location *time.Location, batch
 				}
 				existing.SourceCount += key.SourceCount
 				existing.SourceBytes += key.SourceBytes
+				existing.JSONLBytes += key.JSONLBytes
+				if existing.Models == nil {
+					existing.Models = make(map[string]requestLogUsageAuditModel)
+				}
 				for modelName, model := range key.Models {
 					em := existing.Models[modelName]
 					em.SourceCount += model.SourceCount
 					em.SourceBytes += model.SourceBytes
+					em.JSONLBytes += model.JSONLBytes
 					existing.Models[modelName] = em
 				}
 				previous.keyNames[keyName] = existing
@@ -557,11 +571,11 @@ func normalizeRequestLogUsageBatch(record requestLogUsageAuditRecord, location *
 		if keyName == "" {
 			return requestLogUsageBatch{}, false, errors.New("uploaded audit record has an empty key_name")
 		}
-		if rawKey.SourceCount < 0 || rawKey.SourceBytes < 0 {
+		if rawKey.SourceCount < 0 || rawKey.SourceBytes < 0 || rawKey.JSONLBytes < 0 {
 			return requestLogUsageBatch{}, false, fmt.Errorf("key_name %q has negative totals", keyName)
 		}
 		key := batch.keyNames[keyName]
-		if !safeRequestLogUsageAdd(&key.SourceCount, rawKey.SourceCount) || !safeRequestLogUsageAdd(&key.SourceBytes, rawKey.SourceBytes) {
+		if !safeRequestLogUsageAdd(&key.SourceCount, rawKey.SourceCount) || !safeRequestLogUsageAdd(&key.SourceBytes, rawKey.SourceBytes) || !safeRequestLogUsageAdd(&key.JSONLBytes, rawKey.JSONLBytes) {
 			return requestLogUsageBatch{}, false, fmt.Errorf("key_name %q totals overflow", keyName)
 		}
 		if key.Models == nil {
@@ -569,11 +583,11 @@ func normalizeRequestLogUsageBatch(record requestLogUsageAuditRecord, location *
 		}
 		for rawModelName, rawModel := range rawKey.Models {
 			modelName := strings.TrimSpace(rawModelName)
-			if modelName == "" || rawModel.SourceCount < 0 || rawModel.SourceBytes < 0 {
+			if modelName == "" || rawModel.SourceCount < 0 || rawModel.SourceBytes < 0 || rawModel.JSONLBytes < 0 {
 				return requestLogUsageBatch{}, false, fmt.Errorf("key_name %q has invalid model totals", keyName)
 			}
 			model := key.Models[modelName]
-			if !safeRequestLogUsageAdd(&model.SourceCount, rawModel.SourceCount) || !safeRequestLogUsageAdd(&model.SourceBytes, rawModel.SourceBytes) {
+			if !safeRequestLogUsageAdd(&model.SourceCount, rawModel.SourceCount) || !safeRequestLogUsageAdd(&model.SourceBytes, rawModel.SourceBytes) || !safeRequestLogUsageAdd(&model.JSONLBytes, rawModel.JSONLBytes) {
 				return requestLogUsageBatch{}, false, fmt.Errorf("key_name %q model %q totals overflow", keyName, modelName)
 			}
 			key.Models[modelName] = model
@@ -585,6 +599,7 @@ func normalizeRequestLogUsageBatch(record requestLogUsageAuditRecord, location *
 			return requestLogUsageBatch{}, false, errors.New("uploaded audit record totals overflow")
 		}
 	}
+	fillRequestLogUsageJSONL(&batch)
 	return batch, true, nil
 }
 
@@ -706,6 +721,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 		dayProvider := dayAggregate.providers[provider]
 		_ = safeRequestLogUsageAdd(&dayProvider.SourceCount, batch.sourceCount)
 		_ = safeRequestLogUsageAdd(&dayProvider.SourceBytes, batch.sourceBytes)
+		_ = safeRequestLogUsageAdd(&dayProvider.JSONLBytes, batch.jsonlBytes)
 		dayAggregate.providers[provider] = dayProvider
 
 		batchKeyNames := make([]string, 0, len(batch.keyNames))
@@ -719,11 +735,13 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				KeyName:     keyName,
 				SourceCount: key.SourceCount,
 				SourceBytes: key.SourceBytes,
+				JSONLBytes:  key.JSONLBytes,
 				Models:      requestLogUsageModels(key.Models),
 			})
 			aggregate := ensureRequestLogUsageAggregate(aggregates, keyName)
 			_ = safeRequestLogUsageAdd(&aggregate.sourceCount, key.SourceCount)
 			_ = safeRequestLogUsageAdd(&aggregate.sourceBytes, key.SourceBytes)
+			_ = safeRequestLogUsageAdd(&aggregate.jsonlBytes, key.JSONLBytes)
 			aggregate.batchCount++
 			if aggregate.firstHour.IsZero() || batch.hour.Before(aggregate.firstHour) {
 				aggregate.firstHour = batch.hour
@@ -734,17 +752,20 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			keyProvider := aggregate.providers[provider]
 			_ = safeRequestLogUsageAdd(&keyProvider.SourceCount, key.SourceCount)
 			_ = safeRequestLogUsageAdd(&keyProvider.SourceBytes, key.SourceBytes)
+			_ = safeRequestLogUsageAdd(&keyProvider.JSONLBytes, key.JSONLBytes)
 			aggregate.providers[provider] = keyProvider
 			for modelName, model := range key.Models {
 				current := aggregate.models[modelName]
 				_ = safeRequestLogUsageAdd(&current.SourceCount, model.SourceCount)
 				_ = safeRequestLogUsageAdd(&current.SourceBytes, model.SourceBytes)
+				_ = safeRequestLogUsageAdd(&current.JSONLBytes, model.JSONLBytes)
 				aggregate.models[modelName] = current
 			}
 
 			dailyKey := dayAggregate.keys[keyName]
 			_ = safeRequestLogUsageAdd(&dailyKey.SourceCount, key.SourceCount)
 			_ = safeRequestLogUsageAdd(&dailyKey.SourceBytes, key.SourceBytes)
+			_ = safeRequestLogUsageAdd(&dailyKey.JSONLBytes, key.JSONLBytes)
 			if dailyKey.Models == nil {
 				dailyKey.Models = make(map[string]requestLogUsageAuditModel)
 			}
@@ -752,6 +773,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				current := dailyKey.Models[modelName]
 				_ = safeRequestLogUsageAdd(&current.SourceCount, model.SourceCount)
 				_ = safeRequestLogUsageAdd(&current.SourceBytes, model.SourceBytes)
+				_ = safeRequestLogUsageAdd(&current.JSONLBytes, model.JSONLBytes)
 				dailyKey.Models[modelName] = current
 			}
 			dayAggregate.keys[keyName] = dailyKey
@@ -763,6 +785,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			dayKeyProvider := dayKeyProviders[provider]
 			_ = safeRequestLogUsageAdd(&dayKeyProvider.SourceCount, key.SourceCount)
 			_ = safeRequestLogUsageAdd(&dayKeyProvider.SourceBytes, key.SourceBytes)
+			_ = safeRequestLogUsageAdd(&dayKeyProvider.JSONLBytes, key.JSONLBytes)
 			dayKeyProviders[provider] = dayKeyProvider
 		}
 		hours = append(hours, hour)
@@ -795,6 +818,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 				KeyName:     keyName,
 				SourceCount: key.SourceCount,
 				SourceBytes: key.SourceBytes,
+				JSONLBytes:  key.JSONLBytes,
 				Providers:   requestLogUsageProviderUsages(aggregate.keyProviders[keyName]),
 				Models:      requestLogUsageModels(key.Models),
 			})
@@ -824,6 +848,7 @@ func buildRequestLogUsageResponse(settings requestLogUsageSettings, configuredKe
 			Configured:   aggregate.configured,
 			SourceCount:  aggregate.sourceCount,
 			SourceBytes:  aggregate.sourceBytes,
+			JSONLBytes:   aggregate.jsonlBytes,
 			PendingCount: aggregate.pendingCount,
 			PendingBytes: aggregate.pendingBytes,
 			BatchCount:   aggregate.batchCount,
@@ -930,7 +955,7 @@ func requestLogUsageProviderUsages(providers map[string]requestLogUsageAuditMode
 	out := make([]requestLogUsageProviderUsage, 0, len(names))
 	for _, name := range names {
 		usage := providers[name]
-		out = append(out, requestLogUsageProviderUsage{Provider: name, SourceCount: usage.SourceCount, SourceBytes: usage.SourceBytes})
+		out = append(out, requestLogUsageProviderUsage{Provider: name, SourceCount: usage.SourceCount, SourceBytes: usage.SourceBytes, JSONLBytes: usage.JSONLBytes})
 	}
 	return out
 }
@@ -944,7 +969,7 @@ func requestLogUsageModels(models map[string]requestLogUsageAuditModel) []reques
 	out := make([]requestLogUsageModel, 0, len(names))
 	for _, name := range names {
 		model := models[name]
-		out = append(out, requestLogUsageModel{Model: name, SourceCount: model.SourceCount, SourceBytes: model.SourceBytes})
+		out = append(out, requestLogUsageModel{Model: name, SourceCount: model.SourceCount, SourceBytes: model.SourceBytes, JSONLBytes: model.JSONLBytes})
 	}
 	return out
 }
@@ -955,4 +980,108 @@ func safeRequestLogUsageAdd(target *int64, value int64) bool {
 	}
 	*target += value
 	return true
+}
+
+func fillRequestLogUsageJSONL(batch *requestLogUsageBatch) {
+	if batch == nil || len(batch.keyNames) == 0 {
+		return
+	}
+	var stored int64
+	for _, key := range batch.keyNames {
+		stored += key.JSONLBytes
+	}
+	if stored == 0 && batch.jsonlBytes > 0 {
+		apportionRequestLogUsageJSONL(batch.keyNames, batch.jsonlBytes)
+	}
+	for name, key := range batch.keyNames {
+		apportionRequestLogUsageModelJSONL(key.Models, key.JSONLBytes)
+		batch.keyNames[name] = key
+	}
+}
+
+func apportionRequestLogUsageJSONL(keys map[string]requestLogUsageAuditKey, total int64) {
+	if total <= 0 || len(keys) == 0 {
+		return
+	}
+	names := make([]string, 0, len(keys))
+	for name := range keys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var whole int64
+	for _, name := range names {
+		whole += keys[name].SourceBytes
+	}
+	var assigned int64
+	for index, name := range names {
+		key := keys[name]
+		share := int64(0)
+		if index == len(names)-1 {
+			share = total - assigned
+			if share < 0 {
+				share = 0
+			}
+		} else {
+			share = requestLogUsageProportionalShare(total, key.SourceBytes, whole)
+		}
+		key.JSONLBytes = share
+		assigned += share
+		keys[name] = key
+	}
+}
+
+func apportionRequestLogUsageModelJSONL(models map[string]requestLogUsageAuditModel, total int64) {
+	if total <= 0 || len(models) == 0 {
+		return
+	}
+	var stored int64
+	for _, model := range models {
+		stored += model.JSONLBytes
+	}
+	if stored > 0 {
+		return
+	}
+	names := make([]string, 0, len(models))
+	for name := range models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var whole int64
+	for _, name := range names {
+		whole += models[name].SourceBytes
+	}
+	var assigned int64
+	for index, name := range names {
+		model := models[name]
+		share := int64(0)
+		if index == len(names)-1 {
+			share = total - assigned
+			if share < 0 {
+				share = 0
+			}
+		} else {
+			share = requestLogUsageProportionalShare(total, model.SourceBytes, whole)
+		}
+		model.JSONLBytes = share
+		assigned += share
+		models[name] = model
+	}
+}
+
+func requestLogUsageProportionalShare(total, part, whole int64) int64 {
+	if total <= 0 || part <= 0 || whole <= 0 {
+		return 0
+	}
+	if part >= whole {
+		return total
+	}
+	hi, lo := bits.Mul64(uint64(total), uint64(part))
+	if hi >= uint64(whole) {
+		return total
+	}
+	quo, _ := bits.Div64(hi, lo, uint64(whole))
+	if quo > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(quo)
 }

@@ -347,15 +347,21 @@ func (s *Service) auditRecordForPrepared(prepared preparedHour) auditRecord {
 	}
 	for _, source := range prepared.Sources {
 		record.SourceBytes += source.Size
+		jsonlBytes := int64(0)
+		if source.JSONLBytes != nil {
+			jsonlBytes = *source.JSONLBytes
+		}
 		keySummary := record.KeyNames[source.KeyName]
 		keySummary.SourceCount++
 		keySummary.SourceBytes += source.Size
+		keySummary.JSONLBytes += jsonlBytes
 		if keySummary.Models == nil {
 			keySummary.Models = make(map[string]auditModelSummary)
 		}
 		modelSummary := keySummary.Models[source.Model]
 		modelSummary.SourceCount++
 		modelSummary.SourceBytes += source.Size
+		modelSummary.JSONLBytes += jsonlBytes
 		keySummary.Models[source.Model] = modelSummary
 		record.KeyNames[source.KeyName] = keySummary
 	}

@@ -13,7 +13,10 @@ import (
 type fakeCLIService struct {
 	historyCalls int
 	historyDry   bool
+	jsonlCalls   int
+	jsonlDry     bool
 	summary      loguploader.SupabaseHistorySummary
+	jsonlSummary loguploader.SupabaseJSONLSyncSummary
 }
 
 func (service *fakeCLIService) Run(context.Context, bool) error { return nil }
@@ -28,6 +31,12 @@ func (service *fakeCLIService) SyncSupabaseHistory(_ context.Context, dryRun boo
 	service.historyCalls++
 	service.historyDry = dryRun
 	return service.summary, nil
+}
+
+func (service *fakeCLIService) SyncSupabaseJSONL(_ context.Context, dryRun bool) (loguploader.SupabaseJSONLSyncSummary, error) {
+	service.jsonlCalls++
+	service.jsonlDry = dryRun
+	return service.jsonlSummary, nil
 }
 
 func TestRunCLISyncSupabaseHistoryDoesNotCreateTOSUploader(t *testing.T) {
@@ -62,9 +71,43 @@ func TestRunCLISyncSupabaseHistoryDoesNotCreateTOSUploader(t *testing.T) {
 	}
 }
 
+func TestRunCLISyncSupabaseJSONLDoesNotCreateTOSUploader(t *testing.T) {
+	service := &fakeCLIService{jsonlSummary: loguploader.SupabaseJSONLSyncSummary{Pending: 1, JSONLBytes: 456}}
+	tosCalls := 0
+	deps := cliDependencies{
+		loadConfig: func(string) (loguploader.Config, error) {
+			return loguploader.Config{
+				Upload:   loguploader.UploadConfig{Enabled: true},
+				Supabase: loguploader.SupabaseConfig{Enabled: true},
+			}, nil
+		},
+		loadEnv: func(string) error { return nil },
+		newTOSUploader: func(loguploader.UploadConfig) (loguploader.ObjectUploader, error) {
+			tosCalls++
+			return nil, errors.New("TOS must not be initialized")
+		},
+		newService: func(loguploader.Config, loguploader.ObjectUploader) (cliService, error) {
+			return service, nil
+		},
+	}
+	var stdout bytes.Buffer
+	errRun := runCLI([]string{"--config", "test.yaml", "--sync-supabase-jsonl", "--dry-run"}, &stdout, deps)
+	if errRun != nil {
+		t.Fatalf("run JSONL CLI: %v", errRun)
+	}
+	if tosCalls != 0 || service.jsonlCalls != 1 || !service.jsonlDry {
+		t.Fatalf("jsonl dispatch: tos_calls=%d jsonl_calls=%d dry_run=%t", tosCalls, service.jsonlCalls, service.jsonlDry)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != `{"records":0,"pending":1,"live_managed":0,"already_checkpointed":0,"skipped_no_jsonl":0,"attempted":0,"inserted":0,"duplicate":0,"checkpointed":0,"source_count":0,"jsonl_bytes":456,"filename_mismatches":0}` {
+		t.Fatalf("jsonl summary output = %q", got)
+	}
+}
+
 func TestRunCLIRejectsHistoryModeConflictsBeforeCreatingDependencies(t *testing.T) {
 	tests := [][]string{
 		{"--sync-supabase-history", "--once"},
+		{"--sync-supabase-jsonl", "--once"},
+		{"--sync-supabase-history", "--sync-supabase-jsonl"},
 		{"--sync-supabase-history", "--migrate-legacy-manifest", "manifest.jsonl", "--migrate-legacy-archives", "archives"},
 		{"--sync-supabase-history", "--migrate-legacy-trust-local"},
 	}

@@ -139,7 +139,16 @@ go build -o bin/log-uploader ./cmd/log-uploader
 
 它不会创建 TOS 客户端，不会列举、下载或读取 TOS 对象，也不会读取原始 `.log` 或 `.jsonl.zst` 内容。补传前会完整校验所有本地账本和上传状态；任何一条记录不一致时，在发出第一个 Supabase 请求前即失败。
 
-历史审计可以精确提供每个 `key_name` 的源文件数量和源日志字节数，以及批次级 JSONL/压缩字节数，但不能精确反推出每个人分别产生的 JSONL 字节数。因此历史事件使用 `usage_precision: batch_only`，不会按比例虚构每 Key JSONL 数值；正常的新上传事件仍提供精确的每 Key JSONL 字节。
+新上传事件始终上报精确的每 Key `jsonl_bytes`（归一化 JSONL，压缩前实际上传体积）。历史补传在审计里已有每 Key JSONL，或能按该小时原始体积比例分摊到批次 `jsonl_bytes` 时，同样使用精确每 Key JSONL；只有完全没有 JSONL 记录的旧批次才回退为 `usage_precision: batch_only`。
+
+若较早的 `--sync-supabase-history` 已经把 `batch_only` 事件写入 Supabase，可用下面的命令按实际上传 JSONL 体积再同步一次（实时流程已上报过的小时会跳过）：
+
+```bash
+./bin/log-uploader --config log-uploader.yaml --sync-supabase-jsonl --dry-run
+./bin/log-uploader --config log-uploader.yaml --sync-supabase-jsonl
+```
+
+该命令与 `--sync-supabase-history` 一样只读本地审计和 `state.json`，不访问 TOS。它使用独立 checkpoint，因此可以补传已经按 batch_only 同步过的对象。若 ingest 按 `event_id` 追加而不是按 `object_key` 覆盖，请先在 Supabase 删除对应 `object_key` 的 batch_only 历史行，再执行正式同步，避免同一小时被计两次。
 
 补传使用确定性事件 ID、持久化 outbox 和按 Supabase 目标隔离的 checkpoint。相同目标重复执行不会重复计数；更换 ingest URL 后会按新目标重新补传。历史补传只把 schema-v3 `state.json` 对应 `hours` 条目中耐久保存的 `supabase_event_id` 视为正常实时流程已接管的标记；仅在 `audit.jsonl` 中出现该 ID 的批次仍会作为历史事件补传。若审计记录与耐久标记中的 ID 不一致，预检会在网络请求前失败。命令输出只包含数量和字节汇总，不包含用户名、对象路径、日志正文或 token。
 
@@ -203,7 +212,7 @@ cliproxy-logs/2026/07/15/2026-07-15-01-codex56sol-2G.jsonl.zst
 auths/log-uploader/audit.jsonl
 ```
 
-每个小时批次的审计记录包含总文件数、总原始字节数、JSONL 大小、压缩后大小、对象路径、删除文件数和状态。`key_names` 是按用户名统计的对象，每个用户名下包含 `source_count`、`source_bytes`，以及按模型细分的 `models`：
+每个小时批次的审计记录包含总文件数、总原始字节数、JSONL 大小、压缩后大小、对象路径、删除文件数和状态。`key_names` 是按用户名统计的对象，每个用户名下包含 `source_count`、`source_bytes`、`jsonl_bytes`，以及按模型细分的 `models`。管理面板除「本地尚存」外一律展示 `jsonl_bytes`：
 
 ```json
 {
