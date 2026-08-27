@@ -1017,18 +1017,15 @@ func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 				block["signature"] = entry.Signature.String()
 			}
 		case "tool_use":
-			input := strings.TrimSpace(entry.PartialJSON.String())
-			if input == "" {
-				if _, exists := block["input"]; !exists {
-					block["input"] = map[string]any{}
-				}
-			} else {
-				var decoded any
-				if json.Unmarshal([]byte(input), &decoded) != nil {
-					return nil, false, fmt.Errorf("invalid tool input JSON for content block %d", index)
-				}
-				block["input"] = decoded
+			decoded, okInput := decodeFableToolInput(entry.PartialJSON.String(), block)
+			if !okInput {
+				// A cancelled or truncated SSE stream often leaves partial_json
+				// unfinished. Drop only this tool_use block so thinking/text
+				// from the same response can still be archived, and so the
+				// source is filtered instead of quarantined.
+				continue
 			}
+			block["input"] = decoded
 		}
 		content = append(content, block)
 	}
@@ -1037,6 +1034,21 @@ func parseFableSSE(payload string) (json.RawMessage, bool, error) {
 	}
 	raw, errMarshal := json.Marshal(content)
 	return raw, errMarshal == nil, errMarshal
+}
+
+func decodeFableToolInput(partialJSON string, block map[string]any) (any, bool) {
+	input := strings.TrimSpace(partialJSON)
+	if input == "" {
+		if existing, exists := block["input"]; exists {
+			return existing, true
+		}
+		return map[string]any{}, true
+	}
+	var decoded any
+	if json.Unmarshal([]byte(input), &decoded) != nil {
+		return nil, false
+	}
+	return decoded, true
 }
 
 func applyFableSSEEvent(blocks map[int]*fableResponseBlock, event map[string]any) error {

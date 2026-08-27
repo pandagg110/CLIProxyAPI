@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -324,9 +323,9 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	}
 }
 
-func TestPrepareFableArchiveEntriesClassifiesInvalidToolInput(t *testing.T) {
+func TestPrepareFableArchiveEntriesOmitsTruncatedToolInput(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "invalid.log")
+	path := filepath.Join(dir, "truncated.log")
 	content := `=== REQUEST INFO ===
 URL: /v1/messages
 Timestamp: 2026-08-26T01:02:03+08:00
@@ -350,18 +349,37 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta"
 		t.Fatal(errStat)
 	}
 	sources := []sourceLog{{
-		Path: path, Relative: "alice/invalid.log", KeyName: "alice", Model: "claude-fable-5",
+		Path: path, Relative: "alice/truncated.log", KeyName: "alice", Model: "claude-fable-5",
 		Provider: providerClaude, Timestamp: info.ModTime(), ModTime: info.ModTime(), Size: info.Size(),
 	}}
 	entries, invalid, errPrepare := prepareFableArchiveEntriesWithInvalid(sources)
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
-	if len(entries) != 0 || len(invalid) != 1 {
-		t.Fatalf("entries=%d invalid=%d, want 0 and 1", len(entries), len(invalid))
+	if len(entries) != 0 || len(invalid) != 0 {
+		t.Fatalf("entries=%d invalid=%d, want 0 and 0", len(entries), len(invalid))
 	}
-	if !strings.Contains(invalid[0].Err.Error(), "invalid tool input JSON") {
-		t.Fatalf("invalid error = %v", invalid[0].Err)
+}
+
+func TestParseFableSSEKeepsTextWhenToolInputIsTruncated(t *testing.T) {
+	payload := "event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool-1","name":"bash"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo"}}` + "\n\n"
+	raw, ok, err := parseFableSSE(payload)
+	if err != nil || !ok {
+		t.Fatalf("parseFableSSE() = ok=%v err=%v", ok, err)
+	}
+	var content []map[string]any
+	if err := json.Unmarshal(raw, &content); err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 1 || content[0]["type"] != "text" || content[0]["text"] != "hello" {
+		t.Fatalf("content = %#v", content)
 	}
 }
 
@@ -377,15 +395,11 @@ URL: /v1/messages
 Timestamp: 2026-08-26T01:02:03+08:00
 
 === REQUEST BODY ===
-{"model":"claude-fable-5","messages":[{"role":"user","content":"hello"}]}
+{"model":"claude-fable-5","messages":[{"role":"user"}]}
 
 === RESPONSE ===
 Status: 200
-event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool-1","name":"bash"}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo"}}
+{"role":"assistant","content":[{"type":"text","text":"ok"}]}
 `
 	if errWrite := os.WriteFile(path, []byte(content), 0o600); errWrite != nil {
 		t.Fatal(errWrite)
@@ -416,6 +430,53 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta"
 	}
 	if hasWork {
 		t.Fatal("quarantined invalid source remains eligible for catch-up")
+	}
+}
+
+func TestBuildArchiveDoesNotQuarantineTruncatedFableToolInput(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "logs", "keys")
+	path := filepath.Join(root, "alice", "truncated.log")
+	if errMkdir := os.MkdirAll(filepath.Dir(path), 0o750); errMkdir != nil {
+		t.Fatal(errMkdir)
+	}
+	content := `=== REQUEST INFO ===
+URL: /v1/messages
+Timestamp: 2026-08-26T01:02:03+08:00
+
+=== REQUEST BODY ===
+{"model":"claude-fable-5","messages":[{"role":"user","content":"hello"}]}
+
+=== RESPONSE ===
+Status: 200
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool-1","name":"bash"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo"}}
+`
+	if errWrite := os.WriteFile(path, []byte(content), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		t.Fatal(errStat)
+	}
+	source := sourceLog{
+		Path: path, Relative: "alice/truncated.log", KeyName: "alice", Model: "claude-fable-5",
+		Provider: providerClaude, Timestamp: info.ModTime(), ArchiveHour: info.ModTime().Truncate(time.Hour),
+		ModTime: info.ModTime(), Size: info.Size(),
+	}
+	service := &Service{cfg: Config{LogsRoot: root, WorkDir: filepath.Join(dir, "work")}, location: time.Local, now: time.Now}
+	if _, _, _, errBuild := service.buildArchive(context.Background(), source.ArchiveHour, providerClaude, []sourceLog{source}, false); errBuild != nil {
+		t.Fatal(errBuild)
+	}
+	if _, errStat = os.Stat(path); errStat != nil {
+		t.Fatalf("truncated source was removed: %v", errStat)
+	}
+	quarantined := filepath.Join(dir, "logs", "quarantine-invalid", "alice", "truncated.log")
+	if _, errStat = os.Stat(quarantined); !os.IsNotExist(errStat) {
+		t.Fatalf("truncated source was quarantined: %v", errStat)
 	}
 }
 
