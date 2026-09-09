@@ -39,7 +39,7 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                       *config.Config
+cfg                       *config.Config
 	configFilePath            string
 	mu                        sync.Mutex
 	reloadMu                  sync.Mutex
@@ -59,8 +59,8 @@ type Handler struct {
 	configReloadHook          func(context.Context, *config.Config)
 	pluginStoreRegistryURL    string
 	pluginStoreHTTPClient     pluginstore.HTTPDoer
-	pluginReleaseCacheMu      sync.Mutex
-	pluginReleaseCache        map[string]pluginReleaseCacheEntry
+	pluginStoreRateLimiter    *pluginstore.GitHubRateLimiter
+	pluginReleases            pluginReleaseCache
 	claudeImportSaveMu        sync.Mutex
 	claudeSessionOAuthFactory func(*config.Config, string) claudeSessionOAuthService
 }
