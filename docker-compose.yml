@@ -10,6 +10,9 @@ services:
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: cli-proxy-api
+    networks:
+      default:
+        ipv4_address: 172.18.0.100
     env_file:
       - .env
     environment:
@@ -93,3 +96,11 @@ services:
     depends_on:
       - cli-proxy-api
     restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
