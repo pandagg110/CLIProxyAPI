@@ -12,7 +12,7 @@ services:
     container_name: cli-proxy-api
     networks:
       default:
-        ipv4_address: 172.18.0.100
+        ipv4_address: 172.18.0.3
     env_file:
       - .env
     environment:
