@@ -36,11 +36,11 @@ services:
       - ./log-qa.yaml:/CLIProxyAPI/log-qa.yaml:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8317/healthz || exit 1"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8317/healthz"]
       interval: 5s
       timeout: 3s
       retries: 6
-      start_period: 30s
+      start_period: 10s
 
   log-uploader:
     image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
