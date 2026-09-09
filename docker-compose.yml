@@ -36,7 +36,7 @@ services:
       - ./log-qa.yaml:/CLIProxyAPI/log-qa.yaml:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8317/healthz"]
+      test: ["CMD", "/usr/bin/curl", "-sf", "http://127.0.0.1:8317/healthz"]
       interval: 5s
       timeout: 3s
       retries: 6
