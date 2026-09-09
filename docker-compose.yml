@@ -35,6 +35,12 @@ services:
       # Read-only QA reports for Management "LOG QA" panel
       - ./log-qa.yaml:/CLIProxyAPI/log-qa.yaml:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8317/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
   log-uploader:
     image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
@@ -60,7 +66,8 @@ services:
       TOS_ACCESS_KEY_ID: ${TOS_ACCESS_KEY_ID}
       TOS_SECRET_ACCESS_KEY: ${TOS_SECRET_ACCESS_KEY}
     depends_on:
-      - cli-proxy-api
+      cli-proxy-api:
+        condition: service_healthy
     restart: unless-stopped
 
   # Read-only quality checker for unuploaded local request logs.
@@ -85,5 +92,6 @@ services:
     env_file:
       - .env
     depends_on:
-      - cli-proxy-api
+      cli-proxy-api:
+        condition: service_healthy
     restart: unless-stopped
