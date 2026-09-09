@@ -39,8 +39,8 @@ services:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8317/healthz || exit 1"]
       interval: 5s
       timeout: 3s
-      retries: 3
-      start_period: 10s
+      retries: 6
+      start_period: 30s
 
   log-uploader:
     image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
