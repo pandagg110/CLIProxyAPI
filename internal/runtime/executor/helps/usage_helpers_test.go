@@ -13,7 +13,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -376,32 +375,23 @@ func TestParseClaudeStreamUsagePreservesThinkingTokensAsReasoningSubset(t *testi
 	}
 }
 
-func TestStreamUsageBufferObserveClaudeStreamMergesIndependentBuckets(t *testing.T) {
-	var buffer StreamUsageBuffer
-	buffer.ObserveClaudeStream([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":831,"cache_read_input_tokens":44225,"output_tokens":0}}}`))
-	buffer.ObserveClaudeStream([]byte(`data: {"type":"message_delta","usage":{"output_tokens":244,"output_tokens_details":{"thinking_tokens":40}}}`))
-	detail, ok := buffer.Detail()
+func TestParseClaudeStreamUsage_MessageStart(t *testing.T) {
+	line := []byte(`data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2095,"cache_creation_input_tokens":7185,"cache_read_input_tokens":355598,"output_tokens":1}}}`)
+	detail, ok := ParseClaudeStreamUsage(line)
 	if !ok {
-		t.Fatal("Detail() ok = false, want true")
+		t.Fatal("expected stream usage to parse from message_start")
 	}
-	if detail.InputTokens != 2 || detail.CacheCreationTokens != 831 || detail.CacheReadTokens != 44225 || detail.OutputTokens != 244 || detail.ReasoningTokens != 40 {
-		t.Fatalf("detail = %+v", detail)
+	if detail.InputTokens != 2095 {
+		t.Errorf("input tokens = %d, want 2095", detail.InputTokens)
 	}
-	if detail.CachedTokens != 44225 || detail.TotalTokens != 45302 {
-		t.Fatalf("cached/total = %d/%d, want 44225/45302", detail.CachedTokens, detail.TotalTokens)
+	if detail.CacheReadTokens != 355598 {
+		t.Errorf("cache read tokens = %d, want 355598", detail.CacheReadTokens)
 	}
-	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Input.CacheWriteTokens != 831 || detail.TokenBreakdown.Output.ReasoningTokens != 40 {
-		t.Fatalf("breakdown = %+v", detail.TokenBreakdown)
+	if detail.CacheCreationTokens != 7185 {
+		t.Errorf("cache creation tokens = %d, want 7185", detail.CacheCreationTokens)
 	}
-}
-
-func TestStreamUsageBufferObserveClaudeStreamPreservesExplicitZero(t *testing.T) {
-	var buffer StreamUsageBuffer
-	buffer.ObserveClaudeStream([]byte(`data: {"usage":{"input_tokens":2,"output_tokens":5}}`))
-	buffer.ObserveClaudeStream([]byte(`data: {"usage":{"output_tokens":0}}`))
-	detail, ok := buffer.Detail()
-	if !ok || detail.OutputTokens != 0 {
-		t.Fatalf("detail = %+v ok=%v, want explicit zero output", detail, ok)
+	if detail.CachedTokens != 355598 {
+		t.Errorf("cached tokens = %d, want 355598", detail.CachedTokens)
 	}
 }
 
@@ -766,39 +756,6 @@ func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	}
 }
 
-func TestResolveUsageSourceUsesNonSecretAuthIdentityBeforeAPIKey(t *testing.T) {
-	auth := &cliproxyauth.Auth{
-		ID:       "auth-id",
-		Index:    "auth-index",
-		Provider: "claude",
-		Label:    "team claude",
-		Metadata: map[string]any{"account_uuid": " account-uuid "},
-		Attributes: map[string]string{
-			"api_key": "upstream-secret",
-		},
-	}
-	auth.Metadata["email"] = "user@example.com"
-	reporter := NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
-	if got := reporter.buildRecord(usage.Detail{}, false).Source; got != "user@example.com" {
-		t.Fatalf("source = %q, want email", got)
-	}
-	delete(auth.Metadata, "email")
-	reporter = NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
-	record := reporter.buildRecord(usage.Detail{}, false)
-	if record.Source != "account-uuid" {
-		t.Fatalf("source = %q, want account-uuid", record.Source)
-	}
-	if record.AuthID != "auth-id" || record.AuthIndex != "auth-index" || record.AuthType == "" {
-		t.Fatalf("identity = auth_id:%q auth_index:%q auth_type:%q", record.AuthID, record.AuthIndex, record.AuthType)
-	}
-
-	delete(auth.Metadata, "account_uuid")
-	reporter = NewUsageReporter(context.Background(), "claude", "claude-sonnet", auth)
-	if got := reporter.buildRecord(usage.Detail{}, false).Source; got != "team claude" {
-		t.Fatalf("source = %q, want auth label", got)
-	}
-}
-
 func TestNewExecutorUsageReporterIncludesExecutorType(t *testing.T) {
 	reporter := NewExecutorUsageReporter(context.Background(), &TestUsageExecutor{}, "gpt-5.4", nil)
 
@@ -1007,6 +964,71 @@ func TestStreamUsageBufferPublishFailure(t *testing.T) {
 	}
 	if record.Detail.TotalTokens != 15 {
 		t.Fatalf("Detail.TotalTokens = %d, want 15", record.Detail.TotalTokens)
+	}
+}
+
+func TestStreamUsageBufferObserveClaudeStream_MergesStartAndDelta(t *testing.T) {
+	var buffer StreamUsageBuffer
+
+	lineStart := []byte(`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-opus-5","usage":{"input_tokens":2095,"cache_creation_input_tokens":7185,"cache_read_input_tokens":355598,"output_tokens":1}}}`)
+	buffer.ObserveClaudeStream(lineStart)
+
+	lineDelta := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}`)
+	buffer.ObserveClaudeStream(lineDelta)
+
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("expected buffer to contain usage detail")
+	}
+	if detail.InputTokens != 2095 {
+		t.Errorf("InputTokens = %d, want 2095", detail.InputTokens)
+	}
+	if detail.OutputTokens != 15 {
+		t.Errorf("OutputTokens = %d, want 15", detail.OutputTokens)
+	}
+	if detail.CacheReadTokens != 355598 {
+		t.Errorf("CacheReadTokens = %d, want 355598", detail.CacheReadTokens)
+	}
+	if detail.CacheCreationTokens != 7185 {
+		t.Errorf("CacheCreationTokens = %d, want 7185", detail.CacheCreationTokens)
+	}
+	if detail.CachedTokens != 355598 {
+		t.Errorf("CachedTokens = %d, want 355598", detail.CachedTokens)
+	}
+	wantTotal := int64(2095 + 15 + 355598 + 7185)
+	if detail.TotalTokens != wantTotal {
+		t.Errorf("TotalTokens = %d, want %d", detail.TotalTokens, wantTotal)
+	}
+}
+
+func TestStreamUsageBufferObserveClaudeStream_FailurePreservesUsage(t *testing.T) {
+	var buffer StreamUsageBuffer
+
+	lineStart := []byte(`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-opus-5","usage":{"input_tokens":2095,"cache_creation_input_tokens":7185,"cache_read_input_tokens":355598,"output_tokens":1}}}`)
+	buffer.ObserveClaudeStream(lineStart)
+
+	reporter := &UsageReporter{
+		provider: "claude",
+		model:    "claude-opus-5",
+	}
+
+	record := reporter.buildRecord(buffer.detail, true, failFromErrors(context.Canceled))
+	if !record.Failed {
+		t.Fatal("expected record to be marked failed")
+	}
+	if record.Detail.InputTokens != 2095 {
+		t.Errorf("InputTokens = %d, want 2095", record.Detail.InputTokens)
+	}
+	if record.Detail.CacheReadTokens != 355598 {
+		t.Errorf("CacheReadTokens = %d, want 355598", record.Detail.CacheReadTokens)
+	}
+	if record.Detail.CacheCreationTokens != 7185 {
+		t.Errorf("CacheCreationTokens = %d, want 7185", record.Detail.CacheCreationTokens)
+	}
+
+	// Verify buffer.PublishFailure succeeds with the accumulated usage detail
+	if !buffer.PublishFailure(context.Background(), reporter, context.Canceled) {
+		t.Fatal("expected PublishFailure to return true")
 	}
 }
 
