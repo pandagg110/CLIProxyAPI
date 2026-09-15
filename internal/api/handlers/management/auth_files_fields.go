@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
@@ -1034,7 +1034,7 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
 	}
-stripClaudeOAuthSessionSecrets(record)
+	stripClaudeOAuthSessionSecrets(record)
 	if claudeOAuthStorageContainsSessionKey(record) {
 		return "", fmt.Errorf("Claude OAuth storage contains session material")
 	}
