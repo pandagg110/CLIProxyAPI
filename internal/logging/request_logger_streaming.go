@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -13,8 +14,11 @@ import (
 // It spools streaming response chunks to a temporary file to avoid retaining large responses in memory.
 // The final log file is assembled when Close is called.
 type FileStreamingLogWriter struct {
-	// logFilePath is the final log file path.
-	logFilePath string
+	// logsDir is the target directory for log files.
+	logsDir string
+
+	// logFilename is the target log file name.
+	logFilename string
 
 	// url is the request URL (masked upstream in middleware).
 	url string
@@ -214,13 +218,13 @@ func (w *FileStreamingLogWriter) Close() error {
 	default:
 	}
 
-	if w.logFilePath == "" {
+	if w.logFilename == "" {
 		w.cleanupTempFiles()
 		return nil
 	}
 
 	defer w.cleanupTempFiles()
-	if errPublish := publishRequestLog(w.logFilePath, w.writeFinalLog); errPublish != nil {
+	if errPublish := publishRequestLog(filepath.Join(w.logsDir, w.logFilename), w.writeFinalLog); errPublish != nil {
 		return fmt.Errorf("failed to publish streaming log file: %w", errPublish)
 	}
 	return nil

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -192,7 +192,6 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 
 	// Generate filename with request ID
 	filename := l.generateFilename(url, requestID)
-	filePath := filepath.Join(l.logsDir, filename)
 
 	requestHeaders := make(map[string][]string, len(headers))
 	for key, values := range headers {
@@ -215,7 +214,8 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 
 	// Create streaming writer
 	writer := &FileStreamingLogWriter{
-		logFilePath:      filePath,
+		logsDir:          l.logsDir,
+		logFilename:      filename,
 		url:              url,
 		method:           method,
 		timestamp:        time.Now(),
@@ -280,13 +280,49 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
 	// Use request ID if provided, otherwise use sequential ID
 	var idPart string
 	if len(requestID) > 0 && requestID[0] != "" {
-		idPart = requestID[0]
+		idPart = ShortRequestID(requestID[0])
 	} else {
 		id := requestLogID.Add(1)
 		idPart = fmt.Sprintf("%d", id)
 	}
 
 	return fmt.Sprintf("%s-%s-%s.log", sanitized, timestamp, idPart)
+}
+
+// createUniqueLogFile atomically opens a unique log file within dir. If a file with filename already exists,
+// it avoids overwriting by injecting an incrementing sequence number before the trailing request ID component.
+func createUniqueLogFile(dir, filename string) (*os.File, string, error) {
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	idx := strings.LastIndex(base, "-")
+	prefix := base
+	idPart := ""
+	if idx > 0 {
+		prefix = base[:idx]
+		idPart = base[idx+1:]
+	}
+
+	target := filepath.Join(dir, filename)
+	logFile, errOpen := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if errOpen == nil {
+		return logFile, target, nil
+	}
+	if !os.IsExist(errOpen) {
+		return nil, "", errOpen
+	}
+
+	for seq := 1; seq <= 1000; seq++ {
+		candidateName := fmt.Sprintf("%s_%d-%s%s", prefix, seq, idPart, ext)
+		candidatePath := filepath.Join(dir, candidateName)
+		logCandidate, errCandidate := os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if errCandidate == nil {
+			return logCandidate, candidatePath, nil
+		}
+		if !os.IsExist(errCandidate) {
+			return nil, "", errCandidate
+		}
+	}
+	return nil, "", fmt.Errorf("too many conflicting log files for %s", filename)
 }
 
 // sanitizeForFilename replaces characters that are not safe for filenames.

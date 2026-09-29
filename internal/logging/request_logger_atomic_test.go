@@ -232,7 +232,8 @@ func TestFileStreamingLogWriterFinalizationFailureCleansTempFiles(t *testing.T) 
 	responseBodyPath := filepath.Join(logsDir, "missing-response-body.tmp")
 	finalPath := filepath.Join(logsDir, "stream.log")
 	writer := &FileStreamingLogWriter{
-		logFilePath:      finalPath,
+		logsDir:          logsDir,
+		logFilename:      filepath.Base(finalPath),
 		url:              "/v1/responses",
 		method:           http.MethodPost,
 		timestamp:        time.Now(),

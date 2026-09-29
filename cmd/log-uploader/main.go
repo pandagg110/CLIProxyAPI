@@ -13,8 +13,8 @@ import (
 	"syscall"
 
 	"github.com/joho/godotenv"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/loguploader"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loguploader"
 	log "github.com/sirupsen/logrus"
 )
 

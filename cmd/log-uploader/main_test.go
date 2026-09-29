@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/loguploader"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loguploader"
 )
 
 type fakeCLIService struct {
