@@ -40,12 +40,13 @@ func TestManagementV8RoutesShareAccessControl(t *testing.T) {
 			}
 			cfg.Home.Enabled = tc.home
 			cfg.Plugins.Dir = filepath.Dir(path)
-			h := management.NewHandler(cfg, path, nil)
-			h.SetLocalPassword("test-password")
-			s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
-			s.managementRoutesEnabled.Store(tc.enabled)
-			s.registerManagementRoutes()
-			for _, route := range []string{"/v0/management/config", "/v8/management/config", "/v0/management/plugins", "/v8/management/plugins"} {
+
+			for _, route := range []string{"/v0/management/config", "/v8/management/config", "/v0/management/plugins", "/v8/management/plugins", "/v8/management/request-log-usage", "/v8/management/log-qa/status"} {
+				h := management.NewHandler(cfg, path, nil)
+				h.SetLocalPassword("test-password")
+				s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
+				s.managementRoutesEnabled.Store(tc.enabled)
+				s.registerManagementRoutes()
 				req := httptest.NewRequest(http.MethodGet, route, nil)
 				req.RemoteAddr = "127.0.0.1:1234"
 				if tc.authorized {

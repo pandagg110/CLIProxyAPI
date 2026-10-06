@@ -2,13 +2,12 @@
   'use strict';
 
   var INSTALL_FLAG = '__cpaLogQAInstalled';
-  var MANAGEMENT_PREFIX = '/v0/management';
-  var STATUS_ENDPOINT = '/v0/management/log-qa/status';
-  var SUMMARY_ENDPOINT = '/v0/management/log-qa/summary';
-  var SESSIONS_ENDPOINT = '/v0/management/log-qa/sessions';
-  var RUNS_ENDPOINT = '/v0/management/log-qa/runs';
-  var RUN_ENDPOINT = '/v0/management/log-qa/run';
-  var SESSION_LOGS_ENDPOINT = '/v0/management/log-qa/sessions/logs';
+  var STATUS_ENDPOINT = '/log-qa/status';
+  var SUMMARY_ENDPOINT = '/log-qa/summary';
+  var SESSIONS_ENDPOINT = '/log-qa/sessions';
+  var RUNS_ENDPOINT = '/log-qa/runs';
+  var RUN_ENDPOINT = '/log-qa/run';
+  var SESSION_LOGS_ENDPOINT = '/log-qa/sessions/logs';
   var AUTHORIZATION = 'authorization';
   var MANAGEMENT_KEY = 'x-management-key';
   var POLL_INTERVAL_MS = 2000;
@@ -35,17 +34,13 @@
     }
     try {
       var url = new URL(String(raw), window.location.href);
-      var prefixIndex = url.pathname.lastIndexOf(MANAGEMENT_PREFIX);
-      if (prefixIndex < 0) {
-        return null;
-      }
-      var suffix = url.pathname.slice(prefixIndex + MANAGEMENT_PREFIX.length);
-      if (suffix && suffix.charAt(0) !== '/') {
+      var match = /^(.*\/v(?:0|8)\/management)(?:\/|$)/.exec(url.pathname);
+      if (!match) {
         return null;
       }
       return {
         url: url,
-        apiRoot: url.origin + url.pathname.slice(0, prefixIndex) + MANAGEMENT_PREFIX,
+        apiRoot: url.origin + match[1],
       };
     } catch (_) {
       return null;
@@ -341,7 +336,7 @@
     if (!capturedAuth) {
       return path;
     }
-    return capturedAuth.apiRoot.replace(/\/v0\/management$/, '') + path;
+    return capturedAuth.apiRoot + path;
   }
 
   function authHeaders() {

@@ -23,7 +23,7 @@ func TestRequestLogUsageScriptReturnsCopy(t *testing.T) {
 	if bytes.Contains(second, []byte("sessionStorage")) {
 		t.Fatal("request log usage script must not read credentials from sessionStorage")
 	}
-	if !bytes.Contains(second, []byte("/v0/management/request-log-usage")) {
+	if !bytes.Contains(second, []byte("/request-log-usage")) {
 		t.Fatal("request log usage script is missing its management endpoint")
 	}
 	for _, required := range [][]byte{

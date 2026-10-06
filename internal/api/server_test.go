@@ -3231,6 +3231,13 @@ func TestCustomManagementRoutesRegistered(t *testing.T) {
 		routes[route.Method+" "+route.Path] = struct{}{}
 	}
 	want := []string{
+		"GET /v8/management/request-log-usage",
+		"GET /v8/management/log-qa/status",
+		"GET /v8/management/log-qa/summary",
+		"GET /v8/management/log-qa/sessions",
+		"GET /v8/management/log-qa/sessions/logs",
+		"GET /v8/management/log-qa/runs",
+		"POST /v8/management/log-qa/run",
 		"GET /v0/management/request-log-usage",
 		"GET /v0/management/log-qa/status",
 		"GET /v0/management/log-qa/summary",
@@ -3258,6 +3265,7 @@ func TestCustomManagementRoutesRequireManagementAuth(t *testing.T) {
 		method string
 		path   string
 	}{
+		{method: http.MethodPost, path: "/v8/management/log-qa/run"},
 		{method: http.MethodGet, path: "/v0/management/request-log-usage"},
 		{method: http.MethodPost, path: "/v0/management/log-qa/run"},
 	} {

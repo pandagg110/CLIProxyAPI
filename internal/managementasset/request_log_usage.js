@@ -2,8 +2,7 @@
   'use strict';
 
   var INSTALL_FLAG = '__cpaRequestLogUsageInstalled';
-  var MANAGEMENT_PREFIX = '/v0/management';
-  var USAGE_ENDPOINT = '/v0/management/request-log-usage';
+  var USAGE_ENDPOINT = '/request-log-usage';
   var AUTHORIZATION = 'authorization';
   var MANAGEMENT_KEY = 'x-management-key';
 
@@ -42,17 +41,13 @@
 
     try {
       var url = new URL(String(raw), window.location.href);
-      var prefixIndex = url.pathname.lastIndexOf(MANAGEMENT_PREFIX);
-      if (prefixIndex < 0) {
-        return null;
-      }
-      var suffix = url.pathname.slice(prefixIndex + MANAGEMENT_PREFIX.length);
-      if (suffix && suffix.charAt(0) !== '/') {
+      var match = /^(.*\/v(?:0|8)\/management)(?:\/|$)/.exec(url.pathname);
+      if (!match) {
         return null;
       }
       return {
         url: url,
-        apiRoot: url.origin + url.pathname.slice(0, prefixIndex) + MANAGEMENT_PREFIX,
+        apiRoot: url.origin + match[1],
       };
     } catch (_) {
       return null;
@@ -1178,7 +1173,7 @@
 
     var headers = { Accept: 'application/json' };
     headers[capturedAuth.headerName] = capturedAuth.headerValue;
-    var endpoint = capturedAuth.apiRoot + USAGE_ENDPOINT.slice(MANAGEMENT_PREFIX.length);
+    var endpoint = capturedAuth.apiRoot + USAGE_ENDPOINT;
     var options = {
       method: 'GET',
       headers: headers,
