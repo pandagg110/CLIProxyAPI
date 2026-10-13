@@ -115,7 +115,7 @@ func TestClaudeExecutorMergesStreamUsageInQueue(t *testing.T) {
 	}
 
 	got := waitForQueuedUsagePayload(t, "claude", model)
-	if got.Source != "claude-account-uuid" || got.AuthID != "claude-auth-id" || got.AuthIndex != "claude-auth-index" {
+	if got.Source != "test-upstream-key" || got.AuthID != "claude-auth-id" || got.AuthIndex != "claude-auth-index" {
 		t.Fatalf("queued identity = source:%q auth_id:%q auth_index:%q", got.Source, got.AuthID, got.AuthIndex)
 	}
 	if got.Tokens.InputTokens != 2 || got.Tokens.OutputTokens != 244 || got.Tokens.ReasoningTokens != 40 || got.Tokens.CachedTokens != 44225 || got.Tokens.CacheReadTokens != 44225 || got.Tokens.CacheCreationTokens != 831 || got.Tokens.TotalTokens != 45302 {

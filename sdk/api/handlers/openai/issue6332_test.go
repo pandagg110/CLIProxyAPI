@@ -260,13 +260,14 @@ func TestIssue6332MiddlewareFlushError(t *testing.T) {
 				t.Error("flush skipped trace header behavior")
 			}
 			if requestLogging {
-				files, errReadDir := os.ReadDir(logsDir)
+				requestLogsDir := filepath.Join(logsDir, "keys", logging.APIKeyLogDirectory(""))
+				files, errReadDir := os.ReadDir(requestLogsDir)
 				if errReadDir != nil {
 					t.Fatal(errReadDir)
 				}
 				found := false
 				for _, file := range files {
-					data, errReadFile := os.ReadFile(filepath.Join(logsDir, file.Name()))
+					data, errReadFile := os.ReadFile(filepath.Join(requestLogsDir, file.Name()))
 					if errReadFile != nil {
 						t.Fatal(errReadFile)
 					}

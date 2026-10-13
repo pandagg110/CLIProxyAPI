@@ -3490,14 +3490,15 @@ func TestServerResponsesStreamingRequestLogCapturesUpstreamSections(t *testing.T
 		t.Fatalf("executor calls = %d, want 1", mockExec.executionCalls)
 	}
 
-	entries, errReadDir := os.ReadDir(logsDir)
+	requestLogsDir := filepath.Join(logsDir, "keys", internallogging.APIKeyLogDirectory("test-key"))
+	entries, errReadDir := os.ReadDir(requestLogsDir)
 	if errReadDir != nil {
 		t.Fatalf("read logs dir: %v", errReadDir)
 	}
 	var logPath string
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "v1-responses-") && strings.HasSuffix(entry.Name(), ".log") {
-			logPath = filepath.Join(logsDir, entry.Name())
+			logPath = filepath.Join(requestLogsDir, entry.Name())
 			break
 		}
 	}
@@ -3608,14 +3609,15 @@ func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
 		t.Fatal("timeout waiting for upstream request")
 	}
 
-	entries, errReadDir := os.ReadDir(logsDir)
+	requestLogsDir := filepath.Join(logsDir, "keys", internallogging.APIKeyLogDirectory("test-key"))
+	entries, errReadDir := os.ReadDir(requestLogsDir)
 	if errReadDir != nil {
 		t.Fatalf("read logs dir: %v", errReadDir)
 	}
 	var logPath string
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "v1-responses-") && strings.HasSuffix(entry.Name(), ".log") {
-			logPath = filepath.Join(logsDir, entry.Name())
+			logPath = filepath.Join(requestLogsDir, entry.Name())
 			break
 		}
 	}

@@ -429,14 +429,15 @@ func TestRequestLoggingMiddleware_StreamingResponsesUpstreamSections(t *testing.
 		t.Fatalf("response status = %d, want %d", response.Code, http.StatusOK)
 	}
 
-	entries, errReadDir := os.ReadDir(logsDir)
+	requestLogsDir := filepath.Join(logsDir, "keys", logging.APIKeyLogDirectory(""))
+	entries, errReadDir := os.ReadDir(requestLogsDir)
 	if errReadDir != nil {
 		t.Fatalf("read logs dir: %v", errReadDir)
 	}
 	var logPath string
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "v1-responses-") && strings.HasSuffix(entry.Name(), ".log") {
-			logPath = logsDir + string(os.PathSeparator) + entry.Name()
+			logPath = filepath.Join(requestLogsDir, entry.Name())
 			break
 		}
 	}
