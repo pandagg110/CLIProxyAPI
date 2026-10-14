@@ -29,7 +29,7 @@ type managementHTMLAssetCache struct {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.getConfig()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
@@ -175,7 +175,7 @@ func (s *Server) readManagementHTML(filePath string) ([]byte, error) {
 }
 
 func (s *Server) serveRequestLogUsageScript(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.getConfig()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
@@ -188,7 +188,7 @@ func (s *Server) serveRequestLogUsageScript(c *gin.Context) {
 }
 
 func (s *Server) serveLogQAScript(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.getConfig()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return

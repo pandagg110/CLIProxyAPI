@@ -54,6 +54,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
+	cfg = cfg.CloneForRuntime()
 	if s.requestLogPolicy == nil {
 		log.Error("request log policy unavailable; rejecting configuration reload")
 		return false
@@ -67,8 +68,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}()
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
-	if len(s.oldConfigYaml) > 0 {
-		_ = yaml.Unmarshal(s.oldConfigYaml, &oldCfg)
+	s.cfgMu.RLock()
+	oldConfigYaml := append([]byte(nil), s.oldConfigYaml...)
+	s.cfgMu.RUnlock()
+	if len(oldConfigYaml) > 0 {
+		_ = yaml.Unmarshal(oldConfigYaml, &oldCfg)
 	}
 
 	// Update request logger enabled state if it has changed
@@ -199,7 +203,10 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		return false
 	}
 	// Save YAML snapshot for next comparison
-	s.oldConfigYaml, _ = yaml.Marshal(cfg)
+	marshaledCfg, _ := yaml.Marshal(cfg)
+	s.cfgMu.Lock()
+	s.oldConfigYaml = marshaledCfg
+	s.cfgMu.Unlock()
 
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
 	s.handlers.SetPluginHost(s.pluginHost)

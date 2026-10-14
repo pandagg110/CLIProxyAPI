@@ -172,7 +172,8 @@ func TestUpdateClientsContextFailureKeepsCandidateAuthorizedRequestFailClosed(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	sawCandidateConfig := false
 	server.SetWebsocketAuthChangeHandler(func(_, _ bool) {
-		sawCandidateConfig = server.cfg == &nextCfg
+		publishedCfg := server.getConfig()
+		sawCandidateConfig = publishedCfg != &nextCfg && reflect.DeepEqual(publishedCfg, &nextCfg)
 		cancel()
 	})
 	if server.UpdateClientsContext(ctx, &nextCfg) {
