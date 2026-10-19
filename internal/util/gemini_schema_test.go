@@ -3602,3 +3602,194 @@ func TestCleanJSONSchema_PreservesMultiBranchAnyOfOneOf_Issue3662(t *testing.T) 
 		}
 	})
 }
+
+// TestCleanJSONSchema_RemovesDiscriminatorKeyword_Issue6639 covers Issue #6639:
+// OpenAPI/JSON Schema keyword "discriminator" alongside preserved anyOf/oneOf unions
+// (both directly on a property schema and inside array items) or on object schemas
+// is rejected by the Gemini/Antigravity backend with 400 INVALID_ARGUMENT
+// ("Unknown name \"discriminator\" ... Cannot find field") and must be stripped while
+// preserving legitimate tool properties named "discriminator".
+func TestCleanJSONSchema_RemovesDiscriminatorKeyword_Issue6639(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"target": {
+				"anyOf": [
+					{"type": "object", "properties": {"kind": {"const": "a"}, "url": {"type": "string"}}},
+					{"type": "object", "properties": {"kind": {"const": "b"}, "path": {"type": "string"}}}
+				],
+				"discriminator": {"propertyName": "kind"}
+			},
+			"deliverables": {
+				"type": "array",
+				"items": {
+					"anyOf": [
+						{"type": "object", "properties": {"kind": {"const": "file"}, "path": {"type": "string"}}},
+						{"type": "object", "properties": {"kind": {"const": "link"}, "url": {"type": "string"}}}
+					],
+					"discriminator": {"propertyName": "kind"}
+				}
+			},
+			"polymorphicObject": {
+				"type": "object",
+				"properties": {
+					"kind": {"type": "string"}
+				},
+				"oneOf": [
+					{"properties": {"a": {"type": "string"}}},
+					{"properties": {"b": {"type": "number"}}}
+				],
+				"discriminator": {
+					"propertyName": "kind",
+					"mapping": {"a": "#/definitions/A", "b": "#/definitions/B"}
+				}
+			},
+			"discriminator": {
+				"type": "string",
+				"description": "Legitimate property named discriminator"
+			},
+			"nestedDiscriminatorProp": {
+				"type": "object",
+				"properties": {
+					"discriminator": {
+						"type": "object",
+						"properties": {
+							"kind": {"type": "string"}
+						},
+						"discriminator": {"propertyName": "kind"}
+					}
+				}
+			}
+		},
+		"discriminator": {"propertyName": "target"}
+	}`
+
+	cleaners := map[string]func(string) string{
+		"Antigravity":           CleanJSONSchemaForAntigravity,
+		"AntigravityTool":       func(s string) string { return CleanJSONSchemaForAntigravityTool(s, false) },
+		"AntigravityClaudeTool": func(s string) string { return CleanJSONSchemaForAntigravityClaudeTool(s, false) },
+		"AntigravityResponse":   CleanJSONSchemaForAntigravityResponse,
+		"Gemini":                CleanJSONSchemaForGemini,
+		"GeminiJSONSchema":      CleanJSONSchemaForGeminiJSONSchema,
+	}
+
+	for name, clean := range cleaners {
+		t.Run(name, func(t *testing.T) {
+			got := clean(input)
+			parsed := gjson.Parse(got)
+
+			for _, forbiddenPath := range []string{
+				"discriminator",
+				"properties.target.discriminator",
+				"properties.deliverables.items.discriminator",
+				"properties.polymorphicObject.discriminator",
+				"properties.nestedDiscriminatorProp.properties.discriminator.discriminator",
+			} {
+				if parsed.Get(forbiddenPath).Exists() {
+					t.Errorf("[%s] %s was not removed: %s", name, forbiddenPath, got)
+				}
+			}
+
+			if name != "AntigravityClaudeTool" {
+				if gotBranches := len(parsed.Get("properties.target.anyOf").Array()); gotBranches != 2 {
+					t.Errorf("[%s] properties.target.anyOf branch count = %d, want 2: %s", name, gotBranches, got)
+				}
+				if gotBranches := len(parsed.Get("properties.deliverables.items.anyOf").Array()); gotBranches != 2 {
+					t.Errorf("[%s] properties.deliverables.items.anyOf branch count = %d, want 2: %s", name, gotBranches, got)
+				}
+			}
+
+			if !parsed.Get("properties.discriminator").Exists() {
+				t.Errorf("[%s] legitimate property \"discriminator\" was removed: %s", name, got)
+			}
+			if !parsed.Get("properties.nestedDiscriminatorProp.properties.discriminator.properties.kind").Exists() {
+				t.Errorf("[%s] legitimate nested property \"discriminator\" was removed: %s", name, got)
+			}
+		})
+	}
+}
+
+// TestCleanJSONSchema_RemovesContentMediaTypeKeyword_Issue6699 covers Issue #6699:
+// JSON Schema Content Vocabulary annotations ("contentMediaType" and "contentEncoding")
+// inside nested anyOf/oneOf branches, on property schemas, or at the schema root are
+// rejected by the Gemini/Antigravity backend with 400 INVALID_ARGUMENT
+// ("Unknown name \"contentMediaType\" ... Cannot find field") and must be stripped
+// while preserving the anyOf branches and any legitimate property named
+// "contentMediaType" or "contentEncoding".
+func TestCleanJSONSchema_RemovesContentMediaTypeKeyword_Issue6699(t *testing.T) {
+	input := `{
+		"type": "object",
+		"contentMediaType": "application/json",
+		"contentEncoding": "utf-8",
+		"properties": {
+			"value": {
+				"anyOf": [
+					{ "type": "object", "properties": {} },
+					{ "type": "string", "contentMediaType": "application/json", "contentEncoding": "base64" }
+				]
+			},
+			"directPayload": {
+				"type": "string",
+				"contentMediaType": "application/json",
+				"contentEncoding": "base64"
+			},
+			"contentMediaType": {
+				"type": "string",
+				"contentMediaType": "text/plain",
+				"description": "Legitimate property named contentMediaType"
+			},
+			"contentEncoding": {
+				"type": "string",
+				"contentEncoding": "base64",
+				"description": "Legitimate property named contentEncoding"
+			}
+		}
+	}`
+
+	cleaners := map[string]func(string) string{
+		"Antigravity":           CleanJSONSchemaForAntigravity,
+		"AntigravityTool":       func(s string) string { return CleanJSONSchemaForAntigravityTool(s, false) },
+		"AntigravityClaudeTool": func(s string) string { return CleanJSONSchemaForAntigravityClaudeTool(s, false) },
+		"AntigravityResponse":   CleanJSONSchemaForAntigravityResponse,
+		"Gemini":                CleanJSONSchemaForGemini,
+		"GeminiJSONSchema":      CleanJSONSchemaForGeminiJSONSchema,
+	}
+
+	for name, clean := range cleaners {
+		t.Run(name, func(t *testing.T) {
+			got := clean(input)
+			parsed := gjson.Parse(got)
+
+			for _, forbiddenPath := range []string{
+				"contentMediaType",
+				"contentEncoding",
+				"properties.value.anyOf.1.contentMediaType",
+				"properties.value.anyOf.1.contentEncoding",
+				"properties.directPayload.contentMediaType",
+				"properties.directPayload.contentEncoding",
+				"properties.contentMediaType.contentMediaType",
+				"properties.contentEncoding.contentEncoding",
+			} {
+				if parsed.Get(forbiddenPath).Exists() {
+					t.Errorf("[%s] %s was not removed: %s", name, forbiddenPath, got)
+				}
+			}
+
+			if name != "AntigravityClaudeTool" {
+				if gotBranches := len(parsed.Get("properties.value.anyOf").Array()); gotBranches != 2 {
+					t.Errorf("[%s] properties.value.anyOf branch count = %d, want 2: %s", name, gotBranches, got)
+				}
+				if gotType := parsed.Get("properties.value.anyOf.1.type").String(); gotType != "string" {
+					t.Errorf("[%s] properties.value.anyOf.1.type = %q, want \"string\": %s", name, gotType, got)
+				}
+			}
+
+			if !parsed.Get("properties.contentMediaType").Exists() {
+				t.Errorf("[%s] legitimate property \"contentMediaType\" was removed: %s", name, got)
+			}
+			if !parsed.Get("properties.contentEncoding").Exists() {
+				t.Errorf("[%s] legitimate property \"contentEncoding\" was removed: %s", name, got)
+			}
+		})
+	}
+}
