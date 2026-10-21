@@ -64,6 +64,8 @@ type Handler struct {
 	pluginReleases            pluginReleaseCache
 	claudeImportSaveMu        sync.Mutex
 	claudeSessionOAuthFactory func(*config.Config, string) claudeSessionOAuthService
+	siwcOAuthFactory          func(*config.Config) siwcOAuthService
+	siwcCommitMu              sync.Mutex
 }
 
 type configReloadSnapshot struct {
