@@ -993,7 +993,10 @@ func (h *Handler) tokenStoreWithConfig(cfg *config.Config) coreauth.Store {
 		h.tokenStore = store
 	}
 	if cfg == nil {
-		cfg = h.cfg
+		if h.cfg != nil {
+			snapshot := *h.cfg
+			cfg = &snapshot
+		}
 	}
 	h.mu.Unlock()
 	if cfg != nil {
@@ -1109,7 +1112,7 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 		persistedRecord := record
 		if data, errRead := os.ReadFile(savedPath); errRead == nil && len(data) > 0 {
 			auths, errSynthesize := synthesizer.SynthesizeAuthFile(&synthesizer.SynthesisContext{
-				Config:           h.cfg,
+				Config:           h.configSnapshot(),
 				AuthDir:          filepath.Dir(savedPath),
 				Now:              time.Now(),
 				IDGenerator:      synthesizer.NewStableIDGenerator(),

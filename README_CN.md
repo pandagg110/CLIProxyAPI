@@ -111,6 +111,10 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 <td width="180"><a href="https://xcode.best/register?aff=OuDv"><img src="./assets/xcode.gif" alt="Xcode" width="150"></a></td>
 <td>这个 AI 模型中转服务商可以随时退款；任意用户可免费开票；对公对私都能做；主流模型全都有。客服长时间在线等候您的差遣；有事儿您吩咐，主打一个听劝！<br><br>Xcode贵宾入口：<a href="https://xcode.best/register?aff=OuDv">https://xcode.best</a></td>
 </tr>
+<tr>
+<td width="180"><a href="https://x.com/chenju_ai"><img src="./assets/chenju.png" alt="陈局" width="150"></a></td>
+<td>感谢 <a href="https://x.com/chenju_ai">陈局</a> 赞助了本项目！这大概是本栏唯一一个不打站点广告的。好的开源项目值得被付费，陈局来随个份子，敬作者一杯。X 上找 <a href="https://x.com/chenju_ai">陈局</a> 吹吹水。</td>
+</tr>
 </tbody>
 </table>
 
@@ -199,14 +203,6 @@ CLI 封装器，用于通过 CLIProxyAPI OAuth 即时切换多个 Claude 账户�
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 原生 Windows CLIProxyAPI 分支，集成 TUI、系统托盘及多服务商 OAuth 认证，专为 AI 编程工具打造，无需 API 密钥。
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-一款 VSCode 扩展，提供了在 VSCode 中快速切换 Claude Code 模型的功能，内置 CLIProxyAPI 作为其后端，支持后台自动启动和关闭。
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-Windows 桌面应用，基于 Tauri + React 构建，用于通过 CLIProxyAPI 监控 AI 编程助手配额。支持跨 Gemini、Claude、OpenAI Codex 和 Antigravity 账户的使用量追踪，提供实时仪表盘、系统托盘集成和一键代理控制，无需 API 密钥。
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
